@@ -522,7 +522,10 @@ def _booking_turn(msg: str, state: dict):
             return _finalise_booking(state)
 
     # Read any new details first: "no, make it 7 pm" is a correction, not just a "no".
-    slots, changed = apply_slots(slots, extract_slots(msg, state.get("asked")), msg, state.get("asked"))
+    asked = state.get("asked")
+    if asked == "phone" and not slots.get("name") and not re.search(r"\d", msg) and len(msg.split()) <= 3:
+        asked = "name"   # asked for the phone but the caller gave their name first: take it
+    slots, changed = apply_slots(slots, extract_slots(msg, asked), msg, asked)
     state["slots"] = slots
 
     if state.get("stage") == "confirm" and not changed:

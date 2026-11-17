@@ -204,3 +204,11 @@ def test_concierge_answers_in_parallel_without_an_llm_call(fake_chat):
     paths = dict(rows("SELECT tool, path FROM tool_calls"))
     assert paths == {"check_availability": "agent:reservation", "query_menu_faq": "agent:concierge"}
     assert reply.endswith("Would you like me to book it?")
+
+
+def test_care_always_reaches_staff_even_if_model_only_chats(fake_chat):
+    """Eval failure: the care specialist answered with text and never escalated."""
+    fake_chat.script = ["I am sorry to hear that."]
+    reply, _ = say("I want to complain to the manager, the food was cold", {})
+    assert rows("SELECT tool, path FROM tool_calls") == [("escalate_to_human", "agent:care")]
+    assert "passed this to our team" in reply

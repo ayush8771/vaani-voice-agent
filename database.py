@@ -213,7 +213,7 @@ def active_tables(con: sqlite3.Connection) -> list:
 # ── ADMIN QUERIES ─────────────────────────────────────────────────────────────
 BOOKING_COLUMNS = (
     "b.id, b.date, b.time, b.people, b.name, b.phone, b.status, "
-    "COALESCE(t.label, '-'), b.checked_in_at"
+    "COALESCE(t.label, '-'), b.checked_in_at, b.notes"
 )
 BOOKING_FROM = "FROM bookings b LEFT JOIN restaurant_tables t ON t.id = b.table_id"
 

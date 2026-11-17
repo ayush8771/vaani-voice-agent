@@ -727,3 +727,5 @@ tbody tr:hover td {
 .chip-btn:hover { background: #eaf0f8; }
 .answer { font-size: 1.05rem; font-weight: 600; }
 pre.sql { background: #f6f8fb; padding: 10px; border-radius: 8px; white-space: pre-wrap; font-size: 0.8rem; }
+
+.booking-notes { font-size: 0.75rem; color: #9a5b00; background: #fff4e0; border-radius: 6px; padding: 1px 6px; margin-top: 3px; display: inline-block; }

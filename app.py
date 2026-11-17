@@ -337,7 +337,7 @@ def _register_routes(app: Flask) -> None:
                                              date_from=f["date_from"], date_to=f["date_to"])
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["ID", "Date", "Time", "Guests", "Name", "Phone", "Status", "Table", "Checked in"])
+        writer.writerow(["ID", "Date", "Time", "Guests", "Name", "Phone", "Status", "Table", "Checked in", "Notes"])
         writer.writerows(rows)
         audit(_actor(), "export", f"{len(rows)} rows", _client_ip())
         filename = f"bookings_export_{datetime.now():%Y%m%d_%H%M%S}.csv"

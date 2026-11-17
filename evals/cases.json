@@ -900,5 +900,159 @@
   "expect": {
    "no_booking": true
   }
+ },
+ {
+  "id": "p4-01",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Book a table for 4 tomorrow at 8 pm",
+   "9876543210",
+   "Ravi",
+   "yes",
+   "---",
+   "Book a table for 2 tomorrow at 1 pm",
+   "9876543210",
+   "yes"
+  ],
+  "expect": {
+   "bookings_count": 2,
+   "said_all": [
+    "Welcome back, Ravi!",
+    "I will remember your preferences"
+   ]
+  }
+ },
+ {
+  "id": "p4-02",
+  "lang": "hi",
+  "code": "hi-IN",
+  "turns": [
+   "कल रात 8 बजे 4 लोगों के लिए टेबल बुक करनी है",
+   "9876543210",
+   "मेरा नाम रवि है",
+   "हाँ",
+   "---",
+   "कल दोपहर 1 बजे 2 लोगों के लिए टेबल बुक करनी है",
+   "9876543210",
+   "हाँ"
+  ],
+  "expect": {
+   "bookings_count": 2,
+   "said_all": [
+    "फिर से स्वागत है, रवि!"
+   ]
+  }
+ },
+ {
+  "id": "p4-03",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Book a table for 4 tomorrow at 8 pm",
+   "9876543210",
+   "Ravi",
+   "yes",
+   "---",
+   "I'd like my usual table for tomorrow",
+   "9876543210",
+   "yes"
+  ],
+  "expect": {
+   "bookings_count": 2,
+   "said_all": [
+    "Welcome back, Ravi!",
+    "a table for 4"
+   ]
+  }
+ },
+ {
+  "id": "p4-04",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Book a table for 2 tomorrow at 8 pm for my wife's birthday, she has a nut allergy",
+   "9876543210",
+   "Ravi",
+   "yes"
+  ],
+  "expect": {
+   "notes": "nut allergy; birthday",
+   "said_all": [
+    "complimentary dessert"
+   ]
+  }
+ },
+ {
+  "id": "p4-05",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "I want to speak to the manager about a refund for last week"
+  ],
+  "expect": {
+   "tools": [
+    "escalate_to_human"
+   ],
+   "no_booking": true
+  }
+ },
+ {
+  "id": "p4-06",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Book a table for 10 tomorrow at 8 pm",
+   "9123456780",
+   "Asha",
+   "yes",
+   "---",
+   "Book a table for 10 tomorrow at 8 pm",
+   "waitlist please",
+   "9876543210",
+   "Ravi"
+  ],
+  "expect": {
+   "waitlisted": true,
+   "said_all": [
+    "Say waitlist",
+    "You are on the waitlist"
+   ]
+  }
+ },
+ {
+  "id": "p4-07",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Book a table for 4 tomorrow at 8 pm",
+   "9876543210",
+   "Ravi",
+   "yes",
+   "---",
+   "Please forget me, my number is 9876543210"
+  ],
+  "expect": {
+   "said_all": [
+    "Done, I have removed"
+   ]
+  }
+ },
+ {
+  "id": "p4-08",
+  "lang": "en",
+  "code": "en-IN",
+  "turns": [
+   "Is there a table for 2 tomorrow at 7 pm, and what is the price of paneer tikka?"
+  ],
+  "expect": {
+   "tools": [
+    "check_availability",
+    "query_menu_faq"
+   ],
+   "said_all": [
+    "320"
+   ]
+  }
  }
 ]

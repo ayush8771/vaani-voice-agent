@@ -94,3 +94,25 @@ def test_full_slot_offers_waitlist_and_joins():
     assert reply.startswith("You are on the waitlist for Thursday 19 November at 8 PM")
     assert rows("SELECT date, time, people, name, status FROM waitlist") == [
         (TOMORROW, "20:00", 6, "Ravi", "waiting")]
+
+
+def test_staff_see_booking_notes_on_dashboard():
+    import admins
+    from app import create_app
+    book("Book a table for 2 tomorrow at 8 pm for my wife's birthday, she has a nut allergy")
+    app = create_app()
+    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False, RATELIMIT_ENABLED=False)
+    client = app.test_client()
+    admins.create_admin("staff1", "correct-horse-battery", "staff")
+    client.post("/admin/login", data={"username": "staff1", "password": "correct-horse-battery"})
+    assert b"nut allergy; birthday" in client.get("/admin").data
+
+
+def test_name_given_when_phone_was_asked_is_kept():
+    """Eval regression: callers who say their name first were ignored after phone-before-name."""
+    reply, state = say("Book a table for 4 tomorrow at 8 pm", {})
+    assert state["asked"] == "phone"
+    reply, state = say("Ravi", state)
+    assert state["slots"]["name"] == "Ravi" and state["asked"] == "phone"
+    reply, state = say("9876543210", state)
+    assert reply.startswith("Just to confirm")

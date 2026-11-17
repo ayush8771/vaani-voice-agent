@@ -295,6 +295,10 @@ def run(msg: str, state: dict, info_question: Optional[str] = None,
 
     if not info_question:
         turn = _run_specialist(specialist, msg, state, b)
+        if specialist == "care" and turn is not None and not turn.handoff:
+            # Complaints must always reach staff, even if the model only chatted.
+            result = b.call("escalate_to_human", {"reason": msg[:120], "summary": msg[:400]}, path="agent:care")
+            turn = AgentTurn(parts=[_apply_handoff("escalate_to_human", result, state) or ""], handoff=True)
         return _compose(turn, None)
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vaani-agent") as pool:

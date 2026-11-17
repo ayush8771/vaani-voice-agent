@@ -74,7 +74,7 @@ def create_app() -> Flask:
         SESSION_COOKIE_NAME="vaani_sess",
         PERMANENT_SESSION_LIFETIME=3600,
         WTF_CSRF_TIME_LIMIT=3600,
-        MAX_CONTENT_LENGTH=64 * 1024,
+        MAX_CONTENT_LENGTH=2 * 1024 * 1024,   # ~30 s of 16 kHz WAV audio for /voice
         RATELIMIT_STORAGE_URI=settings.ratelimit_storage_uri,
     )
     csrf.init_app(app)
@@ -179,12 +179,15 @@ def _register_routes(app: Flask) -> None:
         if len(msg) > 500:
             return jsonify({"error": "message too long (max 500 chars)"}), 400
 
+        return _run_turn(msg)
+
+    def _run_turn(msg: str, stt_language=None, extra=None):
         state = session.get("state") or {}
         if "sid" not in session:
             session["sid"] = secrets.token_hex(8)
         token = CURRENT_SESSION.set(session["sid"])
         try:
-            reply, audio, new_state = get_ai_response(msg, state)
+            reply, audio, new_state = get_ai_response(msg, state, stt_language=stt_language)
         except Exception:
             logger.exception("get_ai_response crashed")
             return jsonify({"error": "Internal server error"}), 500
@@ -193,7 +196,38 @@ def _register_routes(app: Flask) -> None:
 
         session["state"] = new_state
         session.modified = True
-        return jsonify({"response": reply, "audio": audio})
+        return jsonify({"response": reply, "audio": audio, "audio_mime": "audio/mpeg",
+                        "language": new_state.get("lang", "en"), **(extra or {})})
+
+    # ── Spoken turn: audio -> Prisma -> Vaani -> Timbre ──────────────────────
+    @app.route("/voice/config")
+    def voice_config():
+        return jsonify({"stt": "gnani" if settings.gnani_stt_enabled else "browser",
+                        "tts": "gnani" if settings.gnani_tts_enabled else "edge",
+                        "max_seconds": 25})
+
+    @app.route("/voice", methods=["POST"])
+    @csrf.exempt  # same protection as /send_message: SameSite cookie + rate limit
+    @limiter.limit("40 per minute; 300 per hour")
+    def voice():
+        if not settings.gnani_stt_enabled:
+            return jsonify({"error": "Speech-to-text is not configured"}), 503
+        upload = request.files.get("audio")
+        if upload is None:
+            return jsonify({"error": "audio file is required"}), 400
+        audio = upload.read()
+        if len(audio) < 2000:
+            return jsonify({"transcript": "", "response": None})
+
+        from services import speech
+        result = speech.transcribe(audio, filename="speech.wav", mime="audio/wav")
+        if not result.ok:
+            return jsonify({"error": "Could not understand the audio", "detail": result.error}), 502
+        if not result.text:
+            return jsonify({"transcript": "", "response": None})
+        logger.info("Prisma %.2fs lang=%s", result.latency, result.language)
+        return _run_turn(result.text[:500], stt_language=result.language,
+                         extra={"transcript": result.text, "detected_language": result.language})
 
     @app.route("/reset_state", methods=["POST"])
     @csrf.exempt

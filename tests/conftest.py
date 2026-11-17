@@ -22,6 +22,8 @@ os.environ.update({
                                  for d in ("tue", "wed", "thu", "fri", "sat", "sun")}),
     "TWILIO_SID": "", "TWILIO_AUTH_TOKEN": "", "TWILIO_WHATSAPP_NUMBER": "",
     "OTP_DEV_ECHO": "false",
+    # Never call the real Gnani API (or spend credits) from tests
+    "GNANI_API_KEY": "", "GNANI_STT_KEY": "", "GNANI_TTS_KEY": "",
 })
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

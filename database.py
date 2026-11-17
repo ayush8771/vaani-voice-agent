@@ -62,6 +62,28 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     locked_until  REAL    NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT    NOT NULL,
+    session_id  TEXT,
+    path        TEXT    NOT NULL,
+    tool        TEXT    NOT NULL,
+    args        TEXT,
+    result      TEXT,
+    ok          INTEGER NOT NULL DEFAULT 0,
+    latency_ms  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id, id);
+
+CREATE TABLE IF NOT EXISTS handoffs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT,
+    reason      TEXT NOT NULL,
+    summary     TEXT,
+    created_at  TEXT NOT NULL,
+    resolved    INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     ts        TEXT NOT NULL DEFAULT (datetime('now')),
@@ -245,6 +267,23 @@ def audit(actor: str, action: str, target: str = "", ip: str = "") -> None:
             "INSERT INTO audit_log(actor, action, target, ip) VALUES (?, ?, ?, ?)",
             (actor, action, target, ip),
         )
+
+
+def recent_tool_calls(limit: int = 50):
+    with connection() as con:
+        return con.execute(
+            "SELECT ts, session_id, path, tool, args, result, ok, latency_ms "
+            "FROM tool_calls ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def recent_handoffs(limit: int = 20):
+    with connection() as con:
+        return con.execute(
+            "SELECT id, created_at, reason, summary, resolved FROM handoffs ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
 
 
 def recent_audit(limit: int = 20):

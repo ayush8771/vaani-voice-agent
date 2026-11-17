@@ -1,18 +1,30 @@
 """
-brain.py — Vaani conversation logic.
+brain.py — Vaani conversation logic: a router in front of two paths.
 
-Phase 1 behaviour:
+  Caller turn
+     |
+   Router (rules, instant)
+     |-- clear booking / cancel step ----> rule flow ---+
+     |                                                  |--> vaani_mcp tools --> DB / WhatsApp
+     '-- open-ended or multi-step -------> LLM agent ---+
+                                           (MCP tool calls)
+
+Rule flow (instant, no LLM for most turns):
   * Booking: collect details -> check hours and a free table -> read back ->
     book only after the caller says yes. Any detail can be corrected.
   * Cancel: find the booking -> send a WhatsApp code -> cancel only after the
     caller says the right code.
-  * A side question (menu, hours, FAQ) during a booking is answered and the
-    booking continues; small talk such as "thanks" no longer wipes it.
+  * A side question during a booking is answered and the booking continues.
+
+Agent (agent.py): questions, multi-intent requests, booking status, handoff to
+staff. It acts only through the same tools, over MCP.
 
 State is a plain dict stored in the Flask session:
-  flow   "booking" | "cancel"
-  stage  "collect" | "confirm" | "otp"
-  slots  {date, time, people, name, phone}
+  flow     "booking" | "cancel"
+  stage    "collect" | "confirm" | "otp"
+  slots    {date, time, people, name, phone}
+  asked    the detail Vaani just asked for
+  history  last few turns, for the agent
 """
 
 import asyncio
@@ -23,54 +35,22 @@ import re
 from datetime import timedelta
 from typing import Optional
 
-import requests
 from edge_tts import Communicate
 
 import availability as av
-import bookings
+import llm_client
+import phrases
 import slot_rules
 from config import settings
-from database import connection
+from phrases import BOOKING_Q, CANCEL_Q, PAST_DATE_REPLY  # noqa: F401  (re-exported for callers)
 from rag_store import retrieve_hits
-from security import OtpRateLimited, create_otp, verify_otp
-from services import whatsapp
+from vaani_mcp import tools
 
 logger = logging.getLogger(__name__)
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
-LLM_OPTIONS = {"temperature": 0, "num_predict": 80, "repeat_penalty": 1.0, "top_k": 1}
-_LLM_TIMEOUT_SECS = 30   # a cold model can take ~20 s to load on CPU
-_LLM_KEEP_ALIVE = "30m"   # keep the model in memory between calls
-_LLM_RETRIES = 2
-
-
-def _unsure_reply() -> str:
-    return ("I want to be accurate, and I am not fully sure from our records. "
-            f"Please call us at {settings.restaurant_phone}.")
-
-
-def _large_group_reply() -> str:
-    return (f"For groups of more than {settings.large_group_threshold} guests, we use our private "
-            "dining room with at least 7 days advance notice. "
-            f"Please call us at {settings.restaurant_phone} or email {settings.private_dining_email}.")
-
-
-PAST_DATE_REPLY = "That date has already passed. Could you choose a future date for the booking?"
-
-BOOKING_Q = {
-    "date":   "What date would you like to book the table for?",
-    "time":   "What time works best for you?",
-    "people": "How many guests will be joining?",
-    "name":   "What name should I put the reservation under?",
-    "phone":  "Could I get your 10-digit mobile number for the booking?",
-}
-CANCEL_Q = {
-    "phone": "What is the 10-digit mobile number registered for the booking?",
-    "date":  "On which date was the reservation?",
-    "time":  "At what time was the reservation?",
-}
 BOOKING_SLOTS = ["date", "time", "people", "name", "phone"]
 CANCEL_SLOTS = ["phone", "date", "time"]
+_unsure_reply = phrases.unsure_reply
 
 
 # ── DATE HELPERS ──────────────────────────────────────────────────────────────
@@ -137,6 +117,9 @@ _BYE_ONLY = re.compile(
 _NEW_BOOKING = re.compile(r"\b(new|another|different|fresh)\s+(booking|reservation|table)\b", re.I)
 _EXISTING_BOOKING = re.compile(r"\b(my|existing|old|previous)\s+(booking|reservation|table)\b", re.I)
 _RESET_KW = re.compile(r"\b(reset|start over|new request|new query|forget previous|restart)\b", re.I)
+_NEEDS_AGENT = re.compile(
+    r"\b(complain|complaint|manager|supervisor|owner|speak to|talk to|human|real person|staff|"
+    r"refund|allerg\w*|special request|birthday|anniversary|surprise)\b", re.I)
 _QUESTION = re.compile(r"\?\s*$|^\s*(what|when|where|which|how|do you|does|is there|are there|can i get)\b", re.I)
 _YES = re.compile(r"\b(yes|yeah|yep|yup|sure|correct|right|confirm|go ahead|book it|"
                   r"haan|ha|ji|theek hai|thik hai|ok|okay)\b", re.I)
@@ -203,38 +186,16 @@ LLM_FALLBACK = "Sorry, I did not catch that. Could you please repeat?"
 
 def llm(prompt: str, system: str = None, max_tokens: int = 250,
         on_fail: Optional[str] = LLM_FALLBACK) -> Optional[str]:
-    """Call Ollama. On failure returns `on_fail` (None for callers that parse the output)."""
-    opts = dict(LLM_OPTIONS, num_predict=max_tokens)
-    last_err = "Unknown error"
-    for attempt in range(1, _LLM_RETRIES + 1):
-        try:
-            r = requests.post(
-                settings.ollama_url,
-                json={"model": settings.ollama_model, "system": system or get_persona(),
-                      "prompt": prompt, "stream": False, "options": opts,
-                      "keep_alive": _LLM_KEEP_ALIVE},
-                timeout=_LLM_TIMEOUT_SECS,
-            )
-            r.raise_for_status()
-            return (r.json().get("response") or "").strip()
-        except requests.Timeout:
-            last_err = f"Timeout after {_LLM_TIMEOUT_SECS}s"
-            logger.warning("LLM timeout (attempt %d/%d)", attempt, _LLM_RETRIES)
-        except requests.HTTPError as exc:
-            last_err = str(exc)
-            break
-        except Exception as exc:
-            last_err = str(exc)
-            logger.error("LLM error (attempt %d/%d): %s", attempt, _LLM_RETRIES, exc)
-    logger.error("LLM failed after %d attempts: %s", _LLM_RETRIES, last_err)
-    return on_fail
+    """Single-turn LLM call. On failure returns `on_fail` (None for callers that parse output)."""
+    result = llm_client.complete(prompt, system or get_persona(), max_tokens=max_tokens)
+    return result if result is not None else on_fail
 
 
 def warm_up_llm() -> None:
     """Load the model into memory so the first caller does not wait."""
     try:
         llm("Hi", system="Reply with OK.", max_tokens=2, on_fail=None)
-        logger.info("LLM warmed up (%s)", settings.ollama_model)
+        logger.info("LLM warmed up (%s)", settings.llm_model)
     except Exception as exc:
         logger.warning("LLM warm-up failed: %s", exc)
 
@@ -515,29 +476,25 @@ def _answer_info(intent: str, msg: str) -> str:
     return _strict_rag_answer(msg, n=4, max_distance=0.47)
 
 
-# ── BOOKING FLOW ──────────────────────────────────────────────────────────────
-def _read_back(slots: dict) -> str:
-    return (
-        f"Just to confirm: a table for {slots['people']} on {av.speak_date(slots['date'])} "
-        f"at {av.speak_time(slots['time'])}, under the name {slots['name']}, "
-        f"mobile ending {' '.join(slots['phone'][-4:])}. Shall I book it?"
-    )
-
-
-def _alternatives_phrase(times: list) -> str:
-    if not times:
-        return "We have no free tables that day. Would you like to try another date?"
-    spoken = [av.speak_time(t) for t in times]
-    joined = spoken[0] if len(spoken) == 1 else ", ".join(spoken[:-1]) + " or " + spoken[-1]
-    return f"I can offer {joined}. Which would you prefer?"
-
-
+# ── BOOKING FLOW (rules) ──────────────────────────────────────────────────────
 def _start_booking(state: dict) -> None:
+    history = state.get("history")
     state.clear()
     state.update({"flow": "booking", "stage": "collect", "slots": {}})
+    if history:
+        state["history"] = history
+
+
+def _clear_flow(state: dict) -> None:
+    """End the current booking or cancel flow but keep the conversation history."""
+    history = state.get("history")
+    state.clear()
+    if history:
+        state["history"] = history
 
 
 def _booking_turn(msg: str, state: dict):
+    state.pop("offer", None)
     slots = state.get("slots", {})
 
     if state.get("stage") == "confirm":
@@ -547,6 +504,7 @@ def _booking_turn(msg: str, state: dict):
         if _NO.search(msg) and short:
             state["stage"] = "collect"
             state.pop("asked", None)
+            state.pop("hold_token", None)
             return _say("No problem. What would you like to change?", state)
 
     slots, changed = apply_slots(slots, extract_slots(msg, state.get("asked")), msg, state.get("asked"))
@@ -560,94 +518,88 @@ def _booking_turn(msg: str, state: dict):
 
     state["stage"] = "collect"
     state.pop("asked", None)
+    state.pop("hold_token", None)
 
-    if slots.get("date") and _is_past_date(slots["date"]):
+    # Check hours, party size and free tables as soon as date and time are known,
+    # before asking for name and phone.
+    if slots.get("date") and slots.get("time"):
+        check = tools.run("check_availability", date=slots["date"], time=slots["time"],
+                          party_size=slots.get("people"))
+        if not check["available"]:
+            if check["reason"] == "large_group":
+                _clear_flow(state)
+                return _say(check["message"], state)
+            clear = check.get("clear")
+            if clear:
+                slots[clear] = None
+                state["asked"] = clear
+            return _say(check["message"], state)
+    elif slots.get("date") and _is_past_date(slots["date"]):
         slots["date"] = None
         state["asked"] = "date"
         return _say(PAST_DATE_REPLY, state)
-
-    if slots.get("people") and slots["people"] > settings.large_group_threshold:
-        state.clear()
-        return _say(_large_group_reply(), state)
-
-    if slots.get("people") and slots["people"] > av.largest_table():
+    elif slots.get("people") and slots["people"] > settings.large_group_threshold:
+        _clear_flow(state)
+        return _say(phrases.large_group_reply(), state)
+    elif slots.get("people") and slots["people"] > av.largest_table():
         slots["people"] = None
         state["asked"] = "people"
-        return _say(f"Our largest table seats {av.largest_table()}. "
-                    f"For bigger groups please call us at {settings.restaurant_phone}.", state)
-
-    # Check hours and free tables as soon as date and time are known,
-    # before asking for name and phone.
-    if slots.get("date") and slots.get("time"):
-        rule = av.check_slot_rules(slots["date"], slots["time"], slots.get("people"))
-        if not rule.ok:
-            if rule.reason == "closed":
-                slots["date"] = None
-                state["asked"] = "date"
-            else:
-                slots["time"] = None
-                state["asked"] = "time"
-            return _say(rule.message, state)
-
-        if slots.get("people"):
-            with connection() as con:
-                free = av.find_free_table(con, slots["date"], slots["time"], slots["people"])
-                alternatives = [] if free else av.suggest_alternatives(
-                    con, slots["date"], slots["time"], slots["people"])
-            if not free:
-                taken = av.speak_time(slots["time"])
-                slots["time"] = None
-                state["asked"] = "time"
-                return _say(f"Sorry, we are fully booked at {taken}. "
-                            + _alternatives_phrase(alternatives), state)
+        return _say(phrases.too_large_reply(), state)
 
     missing = first_missing(slots, BOOKING_SLOTS)
     if missing:
         return _ask(state, missing, BOOKING_Q)
 
+    prepared = tools.run("prepare_booking", date=slots["date"], time=slots["time"],
+                         party_size=slots["people"], name=slots["name"], phone=slots["phone"])
+    if not prepared["ok"]:
+        clear = prepared.get("clear") or (prepared.get("missing") or [None])[0]
+        if clear:
+            slots[clear] = None
+            state["asked"] = clear
+        return _say(prepared["message"], state)
+
     state["stage"] = "confirm"
-    return _say(_read_back(slots), state)
+    state["hold_token"] = prepared["hold_token"]
+    return _say(prepared["message"], state)
 
 
 def _finalise_booking(state: dict):
-    slots = state["slots"]
-    result = bookings.book(slots["date"], slots["time"], slots["people"],
-                           slots["name"], slots["phone"])
-    if not result.ok:
+    hold = state.get("hold_token")
+    if not hold:
         state["stage"] = "collect"
-        if result.reason == "full":
-            taken = av.speak_time(slots["time"])
-            slots["time"] = None
-            return _say(f"Sorry, {taken} was just taken. " + _alternatives_phrase(result.alternatives),
-                        state)
-        if result.reason == "large_group":
-            state.clear()
-            return _say(_large_group_reply(), state)
-        slots["time"] = None
-        return _say(result.message or BOOKING_Q["time"], state)
+        return _booking_turn("", state)
 
-    reply = (f"Your table for {slots['people']} on {av.speak_date(slots['date'])} at "
-             f"{av.speak_time(slots['time'])} is confirmed under {slots['name']}.")
-    if result.whatsapp_sent:
-        reply += " I have sent the confirmation and QR code to your WhatsApp."
-    else:
-        reply += (" I could not send the WhatsApp confirmation right now, but your booking is saved. "
-                  "Just give your name at the entrance.")
-    state.clear()
-    return _say(reply, state)
+    result = tools.run("book_table", hold_token=hold, caller_confirmed=True)
+    if result["ok"]:
+        _clear_flow(state)
+        return _say(result["message"], state)
+
+    state["stage"] = "collect"
+    state.pop("hold_token", None)
+    if result["reason"] == "large_group":
+        _clear_flow(state)
+    elif result["reason"] in ("full", "expired", "past", "outside_hours", "closed"):
+        state["slots"]["time"] = None
+        state["asked"] = "time"
+    return _say(result["message"], state)
 
 
-# ── CANCEL FLOW ───────────────────────────────────────────────────────────────
+# ── CANCEL FLOW (rules) ───────────────────────────────────────────────────────
 def _start_cancel(state: dict) -> None:
+    history = state.get("history")
     state.clear()
     state.update({"flow": "cancel", "stage": "collect", "slots": {}})
+    if history:
+        state["history"] = history
 
 
 def _cancel_turn(msg: str, state: dict):
     if state.get("stage") == "otp":
         return _cancel_otp_turn(msg, state)
 
-    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg, state.get("asked")), msg, state.get("asked"))
+    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg, state.get("asked")), msg,
+                           state.get("asked"))
     slots = {k: slots.get(k) for k in CANCEL_SLOTS}
     state["slots"] = slots
 
@@ -655,28 +607,13 @@ def _cancel_turn(msg: str, state: dict):
     if missing:
         return _ask(state, missing, CANCEL_Q)
 
-    row = bookings.find_active_booking(slots["phone"], slots["date"], slots["time"])
-    if not row:
-        state.clear()
-        return _say("I could not find an active booking matching those details.", state)
-
-    try:
-        code = create_otp(slots["phone"], "cancel")
-    except OtpRateLimited:
-        state.clear()
-        return _say("Too many verification codes were requested for this number. "
-                    f"Please try again in an hour or call us at {settings.restaurant_phone}.", state)
-
-    state.update({"stage": "otp", "booking_id": row[0]})
-    if whatsapp.send_otp(slots["phone"], code):
-        return _say("To keep your booking safe, I have sent a 6-digit code to your WhatsApp. "
-                    "Please tell me the code to confirm the cancellation.", state)
-    if settings.otp_dev_echo:
-        return _say(f"Demo mode: your verification code is {' '.join(code)}. "
-                    "Please say it to confirm the cancellation.", state)
-    state.clear()
-    return _say("I cannot verify your number right now, so I cannot cancel by voice. "
-                f"Please call us at {settings.restaurant_phone}.", state)
+    result = tools.run("start_cancellation", phone=slots["phone"], date=slots["date"], time=slots["time"])
+    if result["ok"]:
+        state.update({"stage": "otp", "cancel_token": result["cancel_token"]})
+        state.pop("asked", None)
+    else:
+        _clear_flow(state)
+    return _say(result["message"], state)
 
 
 def _cancel_otp_turn(msg: str, state: dict):
@@ -684,20 +621,10 @@ def _cancel_otp_turn(msg: str, state: dict):
     if not code:
         return _say("Please tell me the 6-digit code from your WhatsApp.", state)
 
-    result = verify_otp(state["slots"]["phone"], "cancel", code)
-    if result == "ok":
-        booking_id = state["booking_id"]
-        state.clear()
-        if bookings.cancel(booking_id):
-            return _say("Your booking has been cancelled successfully.", state)
-        return _say("That booking is no longer active.", state)
-    if result == "wrong":
-        return _say("That code does not match. Please try again.", state)
-    state.clear()
-    if result == "locked":
-        return _say("Too many wrong codes. For your security I have stopped this cancellation. "
-                    f"Please call us at {settings.restaurant_phone}.", state)
-    return _say("That code has expired. Say cancel to start again.", state)
+    result = tools.run("confirm_cancellation", cancel_token=state.get("cancel_token", ""), code=code)
+    if result["status"] not in ("wrong", "need_code"):
+        _clear_flow(state)
+    return _say(result["message"], state)
 
 
 # ── SIDE QUESTIONS DURING A FLOW ──────────────────────────────────────────────
@@ -709,6 +636,83 @@ def _pending_prompt(state: dict) -> str:
     keys, questions = (BOOKING_SLOTS, BOOKING_Q) if state.get("flow") == "booking" else (CANCEL_SLOTS, CANCEL_Q)
     missing = first_missing(state.get("slots", {}), keys)
     return f"Now, {questions[missing][0].lower()}{questions[missing][1:]}" if missing else ""
+
+
+# ── ROUTER ────────────────────────────────────────────────────────────────────
+def _is_multi_intent(msg: str) -> bool:
+    """A booking or cancel request that also asks something else -> the agent handles it."""
+    action = _BOOK_KW.search(msg) or _CANCEL_KW.search(msg)
+    question = (_MENU_KW.search(msg) or _FAQ_KW.search(msg) or _HOURS_KW.search(msg)) and (
+        _QUESTION.search(msg) or re.search(r"\b(and|also|plus)\b.*\?|\b(do you|is there|are there)\b", msg, re.I))
+    return bool(action and question)
+
+
+def _agent_turn(msg: str, state: dict):
+    """Hand the turn to the tool-calling agent; fall back to the knowledge base if the LLM is down."""
+    if settings.agent_enabled:
+        import agent  # lazy: agent imports this module's tools indirectly
+        reply = agent.run(msg, state)
+        if reply:
+            return _say(reply, state)
+    return _say(_answer_info("other", msg), state)
+
+
+def _route(msg: str, state: dict):
+    flow = state.get("flow")
+    if flow in ("booking", "cancel"):
+        if _BYE_ONLY.match(msg):
+            _clear_flow(state)
+            return _say(f"Okay. Thank you for calling {settings.restaurant_name}. Goodbye!", state)
+
+        intent = _fast_intent(msg)
+        if flow == "booking" and _NEW_BOOKING.search(msg):
+            _start_booking(state)
+            return _booking_turn(msg, state)
+        if flow == "booking" and intent == "cancel":
+            if not _EXISTING_BOOKING.search(msg):
+                _clear_flow(state)
+                return _say("Okay, I have stopped this booking. How else can I help?", state)
+            _start_cancel(state)
+            return _cancel_turn(msg, state)
+        if flow == "cancel" and intent == "book" and not _CANCEL_KW.search(msg):
+            _start_booking(state)
+            return _booking_turn(msg, state)
+        if intent in ("menu", "hours", "faq") and _QUESTION.search(msg):
+            answer = tools.run("query_menu_faq", query=msg)["answer"]
+            return _say(f"{answer} {_pending_prompt(state)}".strip(), state)
+
+        return _booking_turn(msg, state) if flow == "booking" else _cancel_turn(msg, state)
+
+    if _is_multi_intent(msg):
+        return _agent_turn(msg, state)
+
+    intent = _fast_intent(msg)
+    if _EXISTING_BOOKING.search(msg) and intent != "cancel" and not _NEW_BOOKING.search(msg):
+        return _agent_turn(msg, state)   # "is my booking still on?", "change my reservation"
+    if _NEEDS_AGENT.search(msg) and intent not in ("book", "cancel"):
+        return _agent_turn(msg, state)   # complaints, managers, special requests
+
+    if intent == "goodbye" and not _BYE_ONLY.match(msg) and len(msg.split()) > 4:
+        intent = None  # "thanks, and ..." carries a real request
+
+    if intent == "book":
+        _start_booking(state)
+        return _booking_turn(msg, state)
+    if intent == "cancel":
+        _start_cancel(state)
+        return _cancel_turn(msg, state)
+    if intent in ("menu", "hours", "faq") and (_QUESTION.search(msg) or len(msg.split()) <= 6):
+        return _say(tools.run("query_menu_faq", query=msg)["answer"], state)
+    if intent == "greeting":
+        greeting = llm(f"Customer said: {msg}\nGreet warmly as VAANI. One sentence.", max_tokens=60,
+                       on_fail=None)
+        return _say(greeting or "Hello! How can I help you today?", state)
+    if intent == "goodbye":
+        _clear_flow(state)
+        return _say(f"Thank you for calling {settings.restaurant_name}. Have a wonderful day! Goodbye!",
+                    state)
+
+    return _agent_turn(msg, state)
 
 
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
@@ -728,53 +732,10 @@ def get_ai_response(message: str, state: dict):
         state.clear()
         return _say("Okay, I have cleared the current request. How can I help now?", state)
 
-    flow = state.get("flow")
-    if flow in ("booking", "cancel"):
-        if _BYE_ONLY.match(msg):
-            state.clear()
-            return _say(f"Okay. Thank you for calling {settings.restaurant_name}. Goodbye!", state)
-
-        intent = _fast_intent(msg)
-        if flow == "booking" and _NEW_BOOKING.search(msg):
-            _start_booking(state)
-            return _booking_turn(msg, state)
-        if flow == "booking" and intent == "cancel":
-            if not _EXISTING_BOOKING.search(msg):
-                state.clear()
-                return _say("Okay, I have stopped this booking. How else can I help?", state)
-            _start_cancel(state)
-            return _cancel_turn(msg, state)
-        if flow == "cancel" and intent == "book" and not _CANCEL_KW.search(msg):
-            _start_booking(state)
-            return _booking_turn(msg, state)
-        if intent in ("menu", "hours", "faq") and _QUESTION.search(msg):
-            answer = _answer_info(intent, msg)
-            return _say(f"{answer} {_pending_prompt(state)}".strip(), state)
-
-        return _booking_turn(msg, state) if flow == "booking" else _cancel_turn(msg, state)
-
-    intent = _fast_intent(msg)
-    if intent == "goodbye" and not _BYE_ONLY.match(msg) and len(msg.split()) > 4:
-        intent = None  # "thanks, and ..." carries a real request
-    intent = intent or classify_intent(msg)
-    logger.info("[VAANI] intent=%r", intent)
-
-    if intent == "book":
-        _start_booking(state)
-        return _booking_turn(msg, state)
-
-    if intent == "cancel":
-        _start_cancel(state)
-        return _cancel_turn(msg, state)
-
-    if intent == "greeting":
-        greeting = llm(f"Customer said: {msg}\nGreet warmly as VAANI. One sentence.", max_tokens=60,
-                       on_fail=None)
-        return _say(greeting or "Hello! How can I help you today?", state)
-
-    if intent == "goodbye":
-        state.clear()
-        return _say(f"Thank you for calling {settings.restaurant_name}. Have a wonderful day! Goodbye!",
-                    state)
-
-    return _say(_answer_info(intent, msg), state)
+    reply, audio, state = _route(msg, state)
+    try:
+        import agent
+        agent.remember(state, msg, reply)
+    except Exception:  # history is a convenience; never fail a turn over it
+        pass
+    return reply, audio, state

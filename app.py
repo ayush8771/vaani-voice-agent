@@ -8,8 +8,10 @@ Create admin:  python manage.py create-admin
 
 import csv
 import io
+import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -25,7 +27,9 @@ import bookings
 from brain import get_ai_response
 from config import settings
 from database import (audit, get_admin_bookings, get_admin_bookings_for_export,
-                      get_admin_stats, init_db, recent_audit)
+                      get_admin_stats, init_db, recent_audit, recent_handoffs,
+                      recent_tool_calls)
+from vaani_mcp.tools import CURRENT_SESSION
 from security import clear_login_failures, is_locked, record_login_failure
 from services import qr
 
@@ -176,11 +180,16 @@ def _register_routes(app: Flask) -> None:
             return jsonify({"error": "message too long (max 500 chars)"}), 400
 
         state = session.get("state") or {}
+        if "sid" not in session:
+            session["sid"] = secrets.token_hex(8)
+        token = CURRENT_SESSION.set(session["sid"])
         try:
             reply, audio, new_state = get_ai_response(msg, state)
         except Exception:
             logger.exception("get_ai_response crashed")
             return jsonify({"error": "Internal server error"}), 500
+        finally:
+            CURRENT_SESSION.reset(token)
 
         session["state"] = new_state
         session.modified = True
@@ -293,6 +302,21 @@ def _register_routes(app: Flask) -> None:
         filename = f"bookings_export_{datetime.now():%Y%m%d_%H%M%S}.csv"
         return Response(output.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    # ── Agent activity (every tool call, rule path and agent path) ───────────
+    @app.route("/admin/agent")
+    @require_role("owner")
+    def admin_agent():
+        calls = []
+        for ts, session_id, path, tool, args, result, ok, latency_ms in recent_tool_calls(100):
+            try:
+                message = json.loads(result or "{}").get("message", "")
+            except (TypeError, ValueError):
+                message = ""
+            calls.append({"ts": ts, "session": (session_id or "")[:8], "path": path, "tool": tool,
+                          "args": args, "ok": bool(ok), "latency_ms": latency_ms, "message": message})
+        return render_template("agent_trace.html", calls=calls, handoffs=recent_handoffs(),
+                               model=settings.llm_model, agent_enabled=settings.agent_enabled)
 
     # ── Check-in (QR code opens this page on a staff phone) ──────────────────
     @app.route("/admin/checkin/<path:qr_value>", methods=["GET", "POST"])

@@ -109,7 +109,8 @@ def parse_time(text: str) -> Optional[str]:
     m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", t)                          # 20:00
     if m:
         h, mins = int(m.group(1)), int(m.group(2))
-        if h <= 11 and not re.search(r"\bmorning\b", t) and re.search(r"\b(evening|night|dinner)\b", t):
+        if h <= 11 and not re.search(r"\b(morning|subah)\b", t) and re.search(
+                r"\b(evening|night|dinner|baje|o'?clock)\b", t):     # "7:30 baje" means 7:30 PM
             h += 12
         return f"{h:02d}:{mins:02d}"
 
@@ -170,7 +171,7 @@ _NOT_NAMES = {"yes", "no", "yeah", "nope", "sure", "okay", "ok", "fine", "book",
 
 def _clean_name(raw: str) -> Optional[str]:
     name = _FILLERS.sub(" ", raw or "")
-    name = re.sub(r"[^A-Za-z .'-]", " ", name)
+    name = re.sub(r"[^\wऀ-ॿ .'-]|[\d_]", " ", name)   # Latin or Devanagari (Ravi, रवि)
     name = " ".join(w for w in name.split() if w.lower() not in ("is", "the", "name"))
     words = name.split()
     if not words or len(words) > 4 or words[0].lower() in _NOT_NAMES:
@@ -183,7 +184,8 @@ def parse_name(text: str, asked: bool = False) -> Optional[str]:
     t = _FILLERS.sub(" ", text or "")
     m = re.search(
         r"\b(?:my name is|my name's|name is|name's|under the name(?: of)?|under|"
-        r"call me|this is|i am|i'm|mera naam)\s+([A-Za-z][A-Za-z .'-]{1,40}?)" + _NAME_STOP, t, re.I)
+        r"call me|this is|i am|i'm|mera naam)\s+((?:[^\W\d_]|[ऀ-ॿ])[\wऀ-ॿ .'-]{0,40}?)"
+        + _NAME_STOP, t, re.I)
     if m:
         return _clean_name(m.group(1))
     if asked and len(t.split()) <= 4 and not re.search(r"\d", t):

@@ -27,15 +27,12 @@ State is a plain dict stored in the Flask session:
   history  last few turns, for the agent
 """
 
-import asyncio
-import base64
 import json
 import logging
 import re
 from datetime import timedelta
 from typing import Optional
 
-from edge_tts import Communicate
 
 import availability as av
 import llm_client
@@ -146,38 +143,9 @@ def _fast_intent(msg: str) -> Optional[str]:
 
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
-async def _speak_async(text: str) -> Optional[str]:
-    try:
-        c = Communicate(text=text, voice="en-IN-PrabhatNeural", rate="+5%")
-        buf = bytearray()
-        async for chunk in c.stream():
-            if chunk["type"] == "audio":
-                buf.extend(chunk["data"])
-        if not buf:
-            logger.warning("TTS returned empty audio for text: %.60s", text)
-            return None
-        return base64.b64encode(bytes(buf)).decode()
-    except Exception as exc:
-        logger.error("TTS error: %s", exc)
-        return None
-
-
-def speak(text: str) -> Optional[str]:
-    if not settings.tts_enabled:
-        return None
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_speak_async(text))
-    except Exception as exc:
-        logger.error("TTS speak() error: %s", exc)
-        return None
-    finally:
-        loop.close()
-
-
 def _say(text: str, state: dict):
-    """Produce (reply_text, audio_b64_or_None, state)."""
-    return text, speak(text), state
+    """Produce (reply_text, audio, state). Audio is added once, after localisation."""
+    return text, None, state
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
@@ -267,7 +235,7 @@ def _normalize_slots(slots: dict) -> dict:
     raw_name = slots.get("name")
     cleaned["name"] = None
     if isinstance(raw_name, str):
-        name = re.sub(r"[^\w\s.'-]", "", raw_name).strip()
+        name = re.sub(r"[^\wऀ-ॿ\s.'-]", "", raw_name).strip()
         cleaned["name"] = name if 2 <= len(name) <= 60 else None
 
     cleaned["phone"] = _normalize_phone(slots.get("phone"))
@@ -749,26 +717,44 @@ def _route(msg: str, state: dict):
 
 
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
-def get_ai_response(message: str, state: dict):
-    """Returns (reply_text, audio_b64_or_None, new_state)."""
+WELCOME = ("Namaste, and welcome to {restaurant}! I am VAANI. You can talk to me in English or Hindi. "
+           "I can book a table, cancel a reservation, or answer questions about our menu. How can I help?")
+
+
+def get_ai_response(message: str, state: dict, stt_language: Optional[str] = None, speak: bool = True):
+    """
+    One caller turn. Returns (reply_text, audio_b64_or_None, new_state).
+
+    stt_language: the language Prisma detected (e.g. "hi-IN"), if the turn was spoken.
+    The reply comes back in the caller's language (state["lang"]).
+    """
+    import i18n
+    from services import speech
+
     msg = (message or "").strip()
 
     if msg == "__WELCOME__":
-        return _say(
-            f"Hello and welcome to {settings.restaurant_name}! I am VAANI. "
-            "I can help you book a table, cancel a reservation, "
-            "or answer questions about our menu. How can I help?",
-            state,
-        )
+        reply = WELCOME.format(restaurant=settings.restaurant_name)
+        audio = speech.synthesize(reply, "en") if speak else None
+        return reply, audio.audio_b64 if audio else None, state
 
-    if _RESET_KW.search(msg):
+    lang = i18n.update_language(state, msg, stt_language)
+    english = i18n.to_english(msg, lang, asked=state.get("asked"))
+
+    if _RESET_KW.search(english):
+        history_lang = state.get("lang")
         state.clear()
-        return _say("Okay, I have cleared the current request. How can I help now?", state)
+        state["lang"] = history_lang
+        reply_en = "Okay, I have cleared the current request. How can I help now?"
+    else:
+        reply_en, _, state = _route(english, state)
+        try:
+            import agent
+            agent.remember(state, english, reply_en)
+        except Exception:  # history is a convenience; never fail a turn over it
+            pass
 
-    reply, audio, state = _route(msg, state)
-    try:
-        import agent
-        agent.remember(state, msg, reply)
-    except Exception:  # history is a convenience; never fail a turn over it
-        pass
-    return reply, audio, state
+    state["lang"] = lang                       # flows clear state; keep the language
+    reply = i18n.localise(reply_en, lang)
+    audio = speech.synthesize(reply, lang) if speak else None
+    return reply, audio.audio_b64 if audio else None, state

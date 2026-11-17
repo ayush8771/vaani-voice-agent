@@ -42,7 +42,7 @@ def checkin_url(qr_value: str) -> str:
 
 
 def book(date: str, time: str, people: int, name: str, phone: str,
-         notify: bool = True) -> BookingResult:
+         notify: bool = True, notes: str = "") -> BookingResult:
     rule = av.check_slot_rules(date, time, people)
     if not rule.ok:
         return BookingResult(False, rule.reason, rule.message)
@@ -58,9 +58,9 @@ def book(date: str, time: str, people: int, name: str, phone: str,
         table_id, label, _ = table
         cur = con.execute(
             "INSERT INTO bookings(date, time, end_time, people, name, phone, status, "
-            "table_id, token, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)",
+            "table_id, token, created_at, notes) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?)",
             (date, time, av.end_time(time), people, name, phone, table_id, token,
-             av.now().isoformat(timespec="seconds")),
+             av.now().isoformat(timespec="seconds"), (notes or "")[:300] or None),
         )
         booking_id = cur.lastrowid
 

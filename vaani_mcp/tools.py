@@ -170,7 +170,7 @@ def get_opening_hours(date: DateArg = None) -> dict:
 
 # ── BOOKING ───────────────────────────────────────────────────────────────────
 def prepare_booking(date: DateArg = None, time: TimeArg = None, party_size: PartyArg = None,
-                    name: NameArg = None, phone: PhoneArg = None) -> dict:
+                    name: NameArg = None, phone: PhoneArg = None, notes: Text = None) -> dict:
     """Validate a booking and return a read-back for the caller. Writes nothing.
     The booking is only made by book_table() after the caller says yes."""
     slots = {"date": _norm_date(date), "time": _norm_time(time), "people": _norm_people(party_size),
@@ -186,7 +186,7 @@ def prepare_booking(date: DateArg = None, time: TimeArg = None, party_size: Part
                 "alternatives": check.get("alternatives", []), "slots": slots,
                 "message": check["message"]}
 
-    hold = _serializer("vaani-hold").dumps(slots)
+    hold = _serializer("vaani-hold").dumps({**slots, "notes": (notes or "")[:300]})
     return {"ok": True, "hold_token": hold, "slots": slots,
             "message": phrases.read_back(**slots)}
 
@@ -204,7 +204,9 @@ def book_table(hold_token: str, caller_confirmed: bool) -> dict:
     except BadSignature:
         return {"ok": False, "reason": "invalid_hold", "message": "That booking hold is not valid."}
 
-    result = bookings.book(slots["date"], slots["time"], slots["people"], slots["name"], slots["phone"])
+    notes = slots.pop("notes", "")
+    result = bookings.book(slots["date"], slots["time"], slots["people"], slots["name"], slots["phone"],
+                           notes=notes)
     if not result.ok:
         if result.reason == "full":
             message = (f"Sorry, {av.speak_time(slots['time'])} was just taken. "
@@ -238,6 +240,24 @@ def get_booking_status(phone: PhoneArg = None) -> dict:
         return {"ok": True, "bookings": [], "message": "I could not find any upcoming booking for that number."}
     spoken = "; ".join(f"{n} guests on {av.speak_date(d)} at {av.speak_time(t)}" for d, t, n in rows)
     return {"ok": True, "bookings": found, "message": f"I found: {spoken}."}
+
+
+def join_waitlist(date: DateArg = None, time: TimeArg = None, party_size: PartyArg = None,
+                  name: NameArg = None, phone: PhoneArg = None) -> dict:
+    """Put a caller on the waitlist for a full slot. They get a WhatsApp message if a table frees up."""
+    d, t, p = _norm_date(date), _norm_time(time), _norm_people(party_size)
+    n, ph = _norm_name(name), slot_rules.normalize_phone(phone)
+    missing = [k for k, v in (("date", d), ("time", t), ("people", p), ("name", n), ("phone", ph)) if not v]
+    if missing:
+        return {"ok": False, "reason": "missing", "missing": missing, "message": phrases.BOOKING_Q[missing[0]]}
+    with connection() as con:
+        existing = con.execute("SELECT id FROM waitlist WHERE phone=? AND date=? AND time=? AND status='waiting'",
+                               (ph, d, t)).fetchone()
+        if not existing:
+            con.execute("INSERT INTO waitlist(date, time, people, name, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (d, t, p, n, ph, av.now().isoformat(timespec="seconds")))
+    return {"ok": True, "message": f"You are on the waitlist for {av.speak_date(d)} at {av.speak_time(t)}. "
+                                   "I will message you on WhatsApp if a table frees up."}
 
 
 # ── CANCELLATION ──────────────────────────────────────────────────────────────
@@ -332,7 +352,7 @@ def escalate_to_human(reason: Text = None, summary: Text = None) -> dict:
 # ── REGISTRY, LOGGING AND DIRECT CALLS ────────────────────────────────────────
 TOOLS = {
     f.__name__: f for f in (
-        check_availability, get_opening_hours, prepare_booking, book_table, get_booking_status,
+        check_availability, get_opening_hours, prepare_booking, book_table, get_booking_status, join_waitlist,
         start_cancellation, confirm_cancellation, query_menu_faq, escalate_to_human,
     )
 }

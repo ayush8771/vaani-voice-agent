@@ -13,6 +13,8 @@ pypdf==4.2.0
 
 # Agent
 mcp==1.30.0
+mcp-server-sqlite==2025.4.25
+sqlglot==26.17.1
 
 # Security
 pyotp==2.9.0

@@ -103,7 +103,7 @@ def test_every_template_has_matching_placeholders():
 # ── Whole conversations ───────────────────────────────────────────────────────
 def test_full_booking_in_hindi(fake_llm):
     reply, state = say("कल रात 8 बजे 4 लोगों के लिए टेबल बुक करनी है", {}, "hi-IN")
-    assert reply == "बुकिंग किस नाम से करूं?" and state["lang"] == "hi"
+    assert reply == "बुकिंग के लिए अपना 10 अंकों का मोबाइल नंबर बताइए।" and state["lang"] == "hi"
     reply, state = say("मेरा नाम रवि है", state, "hi-IN")
     assert "मोबाइल नंबर" in reply
     reply, state = say("9876543210", state, "en-IN")          # digits detected as English: stays Hindi
@@ -115,7 +115,7 @@ def test_full_booking_in_hindi(fake_llm):
 
 def test_full_booking_in_hinglish(fake_llm):
     reply, state = say("kal shaam saat baje do log ke liye table book karna hai", {}, "hi-IN")
-    assert state["lang"] == "hinglish" and reply == "Booking kis naam se karun?"
+    assert state["lang"] == "hinglish" and reply == "Booking ke liye apna 10-digit mobile number bataiye."
     reply, state = say("mera naam Priya hai", state)
     reply, state = say("9876543210", state)
     assert reply.startswith("Ek baar confirm kar loon") and "shaam 7 baje" in reply
@@ -126,7 +126,7 @@ def test_full_booking_in_hinglish(fake_llm):
 
 def test_english_conversation_unchanged(fake_llm):
     reply, state = say("Book a table for 4 tomorrow at 8 pm", {}, "en-IN")
-    assert reply == "What name should I put the reservation under?" and state["lang"] == "en"
+    assert reply == "Could I get your 10-digit mobile number for the booking?" and state["lang"] == "en"
 
 
 # ── Gnani speech services (network mocked) ────────────────────────────────────
@@ -215,7 +215,7 @@ def test_voice_turn_in_hindi(client, monkeypatch, fake_llm):
     data = client.post("/voice", data={"audio": (wav, "speech.wav")},
                        content_type="multipart/form-data").get_json()
     assert data["transcript"].startswith("कल रात")
-    assert data["response"] == "बुकिंग किस नाम से करूं?" and data["language"] == "hi"
+    assert data["response"] == "बुकिंग के लिए अपना 10 अंकों का मोबाइल नंबर बताइए।" and data["language"] == "hi"
 
 
 def test_voice_ignores_silence(client, monkeypatch):
@@ -327,7 +327,7 @@ def test_kannada_detection_and_localisation():
 
 def test_full_booking_in_kannada(fake_llm):
     reply, state = say("ನಾಳೆ ರಾತ್ರಿ 8 ಗಂಟೆಗೆ ನಾಲ್ಕು ಜನರಿಗೆ ಟೇಬಲ್ ಬುಕ್ ಮಾಡಬೇಕು", {}, "kn-IN")
-    assert state["lang"] == "kn" and reply == "ಬುಕಿಂಗ್ ಯಾರ ಹೆಸರಿನಲ್ಲಿ ಮಾಡಲಿ?"
+    assert state["lang"] == "kn" and reply == "ಬುಕಿಂಗ್‌ಗಾಗಿ ನಿಮ್ಮ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ನಂಬರ್ ಹೇಳಿ."
     reply, state = say("ನನ್ನ ಹೆಸರು ರವಿ", state, "kn-IN")
     reply, state = say("9876543210", state)
     assert reply.startswith("ಒಮ್ಮೆ ಖಚಿತಪಡಿಸುತ್ತೇನೆ") and "ರವಿ" in reply

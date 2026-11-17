@@ -39,7 +39,7 @@ def test_multi_intent_uses_two_tools(fake_chat):
 
     # Saying yes continues the booking with the details already known.
     reply, state = say("yes please", state)
-    assert reply == phrases.BOOKING_Q["name"] and state["slots"]["people"] == 4
+    assert reply == phrases.BOOKING_Q["phone"] and state["slots"]["people"] == 4
 
 
 def test_agent_prepares_booking_and_caller_yes_commits(fake_chat):

@@ -36,6 +36,7 @@ from typing import Optional
 
 import availability as av
 import llm_client
+import memory
 import phrases
 import slot_rules
 from config import settings
@@ -45,7 +46,8 @@ from vaani_mcp import tools
 
 logger = logging.getLogger(__name__)
 
-BOOKING_SLOTS = ["date", "time", "people", "name", "phone"]
+# Phone before name: a returning caller is recognised and not asked their name again
+BOOKING_SLOTS = ["date", "time", "people", "phone", "name"]
 CANCEL_SLOTS = ["phone", "date", "time"]
 _unsure_reply = phrases.unsure_reply
 
@@ -469,9 +471,49 @@ def _clear_flow(state: dict) -> None:
         state["history"] = history
 
 
+_WAITLIST = re.compile(r"\b(wait ?list|waiting list|waiting)\b|वेटिंग|ವೇಟಿಂಗ್", re.I)
+
+
+def _note_details(msg: str, state: dict) -> None:
+    """Remember dietary needs and occasions mentioned anywhere in the booking."""
+    notes = set(state.get("notes", [])) | set(memory.dietary_notes(msg))
+    if notes:
+        state["notes"] = sorted(notes)
+    found = memory.occasion(msg)
+    if found:
+        state["occasion"] = found
+    if memory.USUAL.search(msg):
+        state["wants_usual"] = True
+
+
+def _recognise_caller(state: dict) -> Optional[str]:
+    """Once the phone number is known, fill in what we remember. Returns a greeting."""
+    slots = state["slots"]
+    if not slots.get("phone") or state.get("recognised") is not None:
+        return None
+    profile = memory.get(slots["phone"])
+    state["recognised"] = bool(profile)
+    if not profile:
+        return None
+    if not slots.get("name") and profile.get("name"):
+        slots["name"] = profile["name"]
+    if state.pop("wants_usual", False):
+        slots.setdefault("people", None)
+        slots["people"] = slots["people"] or profile.get("last_people")
+        slots["time"] = slots.get("time") or profile.get("last_time")
+    if profile.get("notes"):
+        state["notes"] = sorted(set(state.get("notes", [])) | set(profile["notes"]))
+    return f"Welcome back, {profile['name']}!" if profile.get("name") else None
+
+
 def _booking_turn(msg: str, state: dict):
     state.pop("offer", None)
     slots = state.get("slots", {})
+    _note_details(msg, state)
+
+    if state.get("full_slot") and _WAITLIST.search(msg):
+        state["waitlist"] = state.pop("full_slot")
+        state["slots"].update({k: state["waitlist"][k] for k in ("date", "time", "people")})
 
     if state.get("stage") == "confirm":
         plain_yes = (_YES.search(msg) and not _NO.search(msg) and len(msg.split()) <= 4
@@ -497,49 +539,84 @@ def _booking_turn(msg: str, state: dict):
     state["stage"] = "collect"
     state.pop("asked", None)
     state.pop("hold_token", None)
+    greeting = _recognise_caller(state)
+
+    def say(text: str):
+        return _say(f"{greeting} {text}" if greeting else text, state)
+
+    if state.get("waitlist"):
+        return _waitlist_turn(state, say)
 
     # Check hours, party size and free tables as soon as date and time are known,
-    # before asking for name and phone.
+    # before asking for phone and name.
     if slots.get("date") and slots.get("time"):
         check = tools.run("check_availability", date=slots["date"], time=slots["time"],
                           party_size=slots.get("people"))
         if not check["available"]:
             if check["reason"] == "large_group":
                 _clear_flow(state)
-                return _say(check["message"], state)
+                return say(check["message"])
+            if check["reason"] == "full":
+                state["full_slot"] = {"date": slots["date"], "time": slots["time"], "people": slots["people"]}
+                message = (check["message"] + f" Or I can add you to the waitlist for "
+                           f"{av.speak_time(slots['time'])}. Say waitlist if you would like that.")
+            else:
+                message = check["message"]
             clear = check.get("clear")
             if clear:
                 slots[clear] = None
                 state["asked"] = clear
-            return _say(check["message"], state)
+            return say(message)
     elif slots.get("date") and _is_past_date(slots["date"]):
         slots["date"] = None
         state["asked"] = "date"
-        return _say(PAST_DATE_REPLY, state)
+        return say(PAST_DATE_REPLY)
     elif slots.get("people") and slots["people"] > settings.large_group_threshold:
         _clear_flow(state)
-        return _say(phrases.large_group_reply(), state)
+        return say(phrases.large_group_reply())
     elif slots.get("people") and slots["people"] > av.largest_table():
         slots["people"] = None
         state["asked"] = "people"
-        return _say(phrases.too_large_reply(), state)
+        return say(phrases.too_large_reply())
 
     missing = first_missing(slots, BOOKING_SLOTS)
     if missing:
-        return _ask(state, missing, BOOKING_Q)
+        state["asked"] = missing
+        return say(BOOKING_Q[missing])
 
     prepared = tools.run("prepare_booking", date=slots["date"], time=slots["time"],
-                         party_size=slots["people"], name=slots["name"], phone=slots["phone"])
+                         party_size=slots["people"], name=slots["name"], phone=slots["phone"],
+                         notes=_booking_notes(state))
     if not prepared["ok"]:
         clear = prepared.get("clear") or (prepared.get("missing") or [None])[0]
         if clear:
             slots[clear] = None
             state["asked"] = clear
-        return _say(prepared["message"], state)
+        return say(prepared["message"])
 
     state["stage"] = "confirm"
     state["hold_token"] = prepared["hold_token"]
-    return _say(prepared["message"], state)
+    return say(prepared["message"])
+
+
+def _booking_notes(state: dict) -> str:
+    parts = list(state.get("notes", []))
+    if state.get("occasion"):
+        parts.append(state["occasion"])
+    return "; ".join(parts)
+
+
+def _waitlist_turn(state: dict, say):
+    """Collect phone and name, then put the caller on the waitlist for the full slot."""
+    slots, wanted = state["slots"], state["waitlist"]
+    for key in ("phone", "name"):
+        if not slots.get(key):
+            state["asked"] = key
+            return say(BOOKING_Q[key])
+    result = tools.run("join_waitlist", date=wanted["date"], time=wanted["time"],
+                       party_size=wanted["people"], name=slots["name"], phone=slots["phone"])
+    _clear_flow(state)
+    return say(result["message"])
 
 
 def _finalise_booking(state: dict):
@@ -550,8 +627,19 @@ def _finalise_booking(state: dict):
 
     result = tools.run("book_table", hold_token=hold, caller_confirmed=True)
     if result["ok"]:
+        slots = state["slots"]
+        first_time = not state.get("recognised")
+        memory.remember_booking(slots["phone"], slots["name"], slots["people"], slots["time"],
+                                state.get("lang", "en"), state.get("notes", []))
+        extra = []
+        offer = memory.offer_for(state.get("occasion"))
+        if offer:
+            extra.append(offer)
+        if first_time:
+            extra.append("I will remember your preferences to make your next booking quicker. "
+                         "Say forget me any time to remove them.")
         _clear_flow(state)
-        return _say(result["message"], state)
+        return _say(" ".join([result["message"], *extra]), state)
 
     state["stage"] = "collect"
     state.pop("hold_token", None)
@@ -561,6 +649,19 @@ def _finalise_booking(state: dict):
         state["slots"]["time"] = None
         state["asked"] = "time"
     return _say(result["message"], state)
+
+
+# ── FORGET ME ─────────────────────────────────────────────────────────────────
+def _forget_turn(msg: str, state: dict):
+    phone = slot_rules.parse_phone(msg) or (state.get("slots") or {}).get("phone")
+    if not phone:
+        _clear_flow(state)
+        state.update({"flow": "forget", "asked": "phone"})
+        return _say("Please tell me the 10-digit mobile number whose saved details I should remove.", state)
+    removed = memory.forget(phone)
+    _clear_flow(state)
+    return _say("Done, I have removed the details I remembered for that number." if removed
+                else "I had nothing saved for that number.", state)
 
 
 # ── CANCEL FLOW (rules) ───────────────────────────────────────────────────────
@@ -634,10 +735,17 @@ def _is_availability_question(msg: str) -> bool:
     return bool(_AVAILABILITY_Q.search(msg))
 
 
+# The info part must be asked, not just mentioned: "we are vegetarian" is a booking note,
+# "do you have vegetarian food" is a question.
+_ASKING = re.compile(r"\?|\b(do you|does|is there|are there|what|which|how much|how many|can i|can we|"
+                     r"could you tell|tell me|any)\b", re.I)
+
+
 def _is_multi_intent(msg: str) -> bool:
     """A booking, cancel or availability request that also asks something else."""
     action = _BOOK_KW.search(msg) or _CANCEL_KW.search(msg) or _AVAILABILITY_Q.search(msg)
-    return bool(action and _INFO_Q.search(msg))
+    clause = _info_clause(msg)
+    return bool(action and clause and _ASKING.search(clause))
 
 
 def _info_clause(msg: str) -> Optional[str]:
@@ -661,6 +769,8 @@ def _agent_turn(msg: str, state: dict):
 
 
 def _route(msg: str, state: dict):
+    if memory.FORGET.search(msg) or state.get("flow") == "forget":
+        return _forget_turn(msg, state)
     flow = state.get("flow")
     if flow in ("booking", "cancel"):
         if _BYE_ONLY.match(msg):

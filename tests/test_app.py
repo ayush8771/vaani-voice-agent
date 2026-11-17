@@ -61,6 +61,17 @@ def test_staff_cannot_export(client):
     assert client.get("/admin/export").status_code == 403
 
 
+def test_dashboard_renders_with_bookings(client):
+    """Regression: the dashboard crashed (500) as soon as one booking existed."""
+    bookings.book(TOMORROW, "19:00", 2, "Asha", "9876543210")
+    cancelled = bookings.book(TOMORROW, "20:30", 2, "Ravi", "9876543211")
+    bookings.cancel(cancelled.booking_id, notify=False)
+    admins.create_admin("owner1", "correct-horse-battery", "owner")
+    login(client, "owner1", "correct-horse-battery")
+    page = client.get("/admin")
+    assert page.status_code == 200 and b"Asha" in page.data and b"Restore" in page.data
+
+
 def test_owner_export_is_audited(client):
     admins.create_admin("owner1", "correct-horse-battery", "owner")
     login(client, "owner1", "correct-horse-battery")

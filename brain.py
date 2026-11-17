@@ -114,7 +114,9 @@ INTENT_SYSTEM = (
 
 # ── KEYWORD PATTERNS ──────────────────────────────────────────────────────────
 _CANCEL_KW = re.compile(r"\b(cancel|cancellation|delete booking|remove booking|cancel my)\b", re.I)
-_BOOK_KW = re.compile(r"\b(book|reserve|reservation|table for|seat|i want a table|can i book)\b", re.I)
+_BOOK_KW = re.compile(
+    r"\b(book|booking|reserve|reservation|table for|seat|i want a table|can i book)\b"
+    r"|\b\d+\s*(people|persons|guests|pax|log|logon)\b", re.I)
 _MENU_KW = re.compile(
     r"\b(menu|food|dish|dishes|eat|starter|main course|dessert|drink|price|cost|"
     r"how much|what do you serve|biryani|paneer|chicken|mutton|prawn|fish|"
@@ -319,15 +321,43 @@ def extract_slots(msg: str) -> dict:
     return slots
 
 
-def apply_slots(existing: dict, new: dict) -> tuple:
+# A slot value from the LLM is only accepted when the caller's words mention
+# that kind of detail, or it answers the question Vaani just asked. This stops
+# a small model from inventing "today" when the caller only changed the time.
+_EVIDENCE = {
+    "date": re.compile(
+        r"\b(today|tomorrow|tonight|day after|aaj|kal|parso|next|this|coming|weekend|date|"
+        r"mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\w*\b"
+        r"|\b\d{1,2}(st|nd|rd|th)\b|\b\d{1,4}[/-]\d{1,2}", re.I),
+    "time": re.compile(
+        r"\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.?|p\.m\.?|baje|o'?clock)|\b\d{1,2}:\d{2}\b|"
+        r"\b(noon|midnight|lunch|dinner|morning|afternoon|evening|night|time)\b", re.I),
+    "people": re.compile(
+        r"\b(people|persons?|guests?|pax|of us|members|log|logon|adults?|kids|children|party)\b"
+        r"|\bfor\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b", re.I),
+    "name": re.compile(r"\b(name|naam|under|call me|i am|i'm|this is|it's)\b", re.I),
+}
+
+
+def apply_slots(existing: dict, new: dict, msg: str = "", asked: Optional[str] = None) -> tuple:
     """Merge new values over old ones so callers can correct details. Returns (slots, changed)."""
     merged = dict(existing)
     changed = []
     for k, v in new.items():
-        if v is not None and merged.get(k) != v:
-            merged[k] = v
-            changed.append(k)
+        if v is None or merged.get(k) == v:
+            continue
+        pattern = _EVIDENCE.get(k)
+        if pattern is not None and k != asked and not pattern.search(msg or ""):
+            logger.info("Ignored unsupported %s=%r from the LLM", k, v)
+            continue
+        merged[k] = v
+        changed.append(k)
     return merged, changed
+
+
+def _ask(state: dict, key: str, questions: dict):
+    state["asked"] = key
+    return _say(questions[key], state)
 
 
 def first_missing(slots: dict, keys: list) -> Optional[str]:
@@ -503,9 +533,10 @@ def _booking_turn(msg: str, state: dict):
             return _finalise_booking(state)
         if _NO.search(msg) and short:
             state["stage"] = "collect"
+            state.pop("asked", None)
             return _say("No problem. What would you like to change?", state)
 
-    slots, changed = apply_slots(slots, extract_slots(msg))
+    slots, changed = apply_slots(slots, extract_slots(msg), msg, state.get("asked"))
     state["slots"] = slots
 
     if state.get("stage") == "confirm" and not changed:
@@ -515,9 +546,11 @@ def _booking_turn(msg: str, state: dict):
                     state)
 
     state["stage"] = "collect"
+    state.pop("asked", None)
 
     if slots.get("date") and _is_past_date(slots["date"]):
         slots["date"] = None
+        state["asked"] = "date"
         return _say(PAST_DATE_REPLY, state)
 
     if slots.get("people") and slots["people"] > settings.large_group_threshold:
@@ -526,30 +559,38 @@ def _booking_turn(msg: str, state: dict):
 
     if slots.get("people") and slots["people"] > av.largest_table():
         slots["people"] = None
+        state["asked"] = "people"
         return _say(f"Our largest table seats {av.largest_table()}. "
                     f"For bigger groups please call us at {settings.restaurant_phone}.", state)
 
+    # Check hours and free tables as soon as date and time are known,
+    # before asking for name and phone.
+    if slots.get("date") and slots.get("time"):
+        rule = av.check_slot_rules(slots["date"], slots["time"], slots.get("people"))
+        if not rule.ok:
+            if rule.reason == "closed":
+                slots["date"] = None
+                state["asked"] = "date"
+            else:
+                slots["time"] = None
+                state["asked"] = "time"
+            return _say(rule.message, state)
+
+        if slots.get("people"):
+            with connection() as con:
+                free = av.find_free_table(con, slots["date"], slots["time"], slots["people"])
+                alternatives = [] if free else av.suggest_alternatives(
+                    con, slots["date"], slots["time"], slots["people"])
+            if not free:
+                taken = av.speak_time(slots["time"])
+                slots["time"] = None
+                state["asked"] = "time"
+                return _say(f"Sorry, we are fully booked at {taken}. "
+                            + _alternatives_phrase(alternatives), state)
+
     missing = first_missing(slots, BOOKING_SLOTS)
     if missing:
-        return _say(BOOKING_Q[missing], state)
-
-    rule = av.check_slot_rules(slots["date"], slots["time"], slots["people"])
-    if not rule.ok:
-        if rule.reason == "closed":
-            slots["date"] = None
-        else:
-            slots["time"] = None
-        return _say(rule.message, state)
-
-    with connection() as con:
-        free = av.find_free_table(con, slots["date"], slots["time"], slots["people"])
-        alternatives = [] if free else av.suggest_alternatives(
-            con, slots["date"], slots["time"], slots["people"])
-    if not free:
-        taken = av.speak_time(slots["time"])
-        slots["time"] = None
-        return _say(f"Sorry, we are fully booked at {taken}. " + _alternatives_phrase(alternatives),
-                    state)
+        return _ask(state, missing, BOOKING_Q)
 
     state["stage"] = "confirm"
     return _say(_read_back(slots), state)
@@ -593,13 +634,13 @@ def _cancel_turn(msg: str, state: dict):
     if state.get("stage") == "otp":
         return _cancel_otp_turn(msg, state)
 
-    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg))
+    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg), msg, state.get("asked"))
     slots = {k: slots.get(k) for k in CANCEL_SLOTS}
     state["slots"] = slots
 
     missing = first_missing(slots, CANCEL_SLOTS)
     if missing:
-        return _say(CANCEL_Q[missing], state)
+        return _ask(state, missing, CANCEL_Q)
 
     row = bookings.find_active_booking(slots["phone"], slots["date"], slots["time"])
     if not row:
@@ -696,7 +737,10 @@ def get_ai_response(message: str, state: dict):
 
         return _booking_turn(msg, state) if flow == "booking" else _cancel_turn(msg, state)
 
-    intent = _fast_intent(msg) or classify_intent(msg)
+    intent = _fast_intent(msg)
+    if intent == "goodbye" and not _BYE_ONLY.match(msg) and len(msg.split()) > 4:
+        intent = None  # "thanks, and ..." carries a real request
+    intent = intent or classify_intent(msg)
     logger.info("[VAANI] intent=%r", intent)
 
     if intent == "book":

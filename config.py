@@ -85,9 +85,14 @@ class Settings:
     login_max_fails: int
     login_lockout_seconds: int
 
-    # LLM
+    # LLM (any OpenAI-compatible endpoint: Ollama, Sarvam, ...)
     ollama_url: str
-    ollama_model: str
+    llm_base_url: str
+    llm_model: str
+    llm_api_key: str
+    llm_timeout: int
+    agent_enabled: bool
+    agent_max_steps: int
 
     # WhatsApp (Twilio)
     twilio_sid: str
@@ -132,7 +137,12 @@ class Settings:
             login_max_fails=_env_int("LOGIN_MAX_FAILS", 5),
             login_lockout_seconds=_env_int("LOGIN_LOCKOUT_SECONDS", 300),
             ollama_url=_env("OLLAMA_URL", "http://localhost:11434/api/generate"),
-            ollama_model=_env("OLLAMA_MODEL", "llama3.2:3b"),
+            llm_base_url=_env("LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/"),
+            llm_model=_env("LLM_MODEL", "qwen2.5:7b", "OLLAMA_MODEL"),
+            llm_api_key=_env("LLM_API_KEY", "ollama"),
+            llm_timeout=_env_int("LLM_TIMEOUT", 45),
+            agent_enabled=_env_bool("AGENT_ENABLED", True),
+            agent_max_steps=_env_int("AGENT_MAX_STEPS", 5),
             twilio_sid=_env("TWILIO_SID"),
             twilio_auth_token=_env("TWILIO_AUTH_TOKEN", "", "TWILIO_AUTH"),
             twilio_whatsapp_number=_env("TWILIO_WHATSAPP_NUMBER", "", "TWILIO_WHATSAPP_FROM"),

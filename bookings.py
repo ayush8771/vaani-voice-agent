@@ -93,10 +93,20 @@ def cancel(booking_id: int, notify: bool = True) -> bool:
         if not row:
             return False
         con.execute("UPDATE bookings SET status='cancelled' WHERE id=?", (booking_id,))
+    name, phone, date, time = row
     if notify:
-        name, phone, date, time = row
         whatsapp.send_cancellation(name=name, phone=phone, date=date, time=time)
+    _offer_freed_table(date)
     return True
+
+
+def _offer_freed_table(date: str) -> None:
+    """A table just freed up: tell anyone waiting for that day (ops agent)."""
+    try:
+        import ops
+        ops.notify_waitlist(av.now(), date)
+    except Exception:
+        logger.exception("Waitlist check after cancellation failed")
 
 
 def restore(booking_id: int) -> str:
@@ -122,7 +132,12 @@ def restore(booking_id: int) -> str:
 
 
 def admin_cancel(booking_id: int) -> bool:
-    return set_booking_status(booking_id, "cancelled")
+    with connection() as con:
+        row = con.execute("SELECT date FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    done = set_booking_status(booking_id, "cancelled")
+    if done and row:
+        _offer_freed_table(row[0])
+    return done
 
 
 def lookup_by_qr(qr_value: str):

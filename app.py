@@ -51,6 +51,13 @@ def _bootstrap_rag() -> None:
         logger.warning("RAG index not built (is Ollama running?): %s", exc)
 
 
+def _start_ops() -> None:
+    """Reminders, waitlist and feedback jobs inside the app (OPS_IN_APP=true)."""
+    if settings.ops_in_app:
+        import ops
+        ops.start_background(settings.ops_interval)
+
+
 def _warm_up_llm() -> None:
     """Load the LLM in the background so the first caller does not hit a cold start."""
     import threading
@@ -429,5 +436,6 @@ if __name__ == "__main__":
     _bootstrap_rag()
     _warm_up_llm()
     application = create_app()
+    _start_ops()
     application.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
                     host="127.0.0.1", port=int(os.getenv("PORT", 5000)))

@@ -94,6 +94,8 @@ class Settings:
     agent_enabled: bool
     agent_max_steps: int
     llm_translate_languages: tuple
+    ops_in_app: bool
+    ops_interval: int
 
     # Speech (Gnani: Prisma speech-to-text, Timbre text-to-speech)
     gnani_base_url: str
@@ -163,6 +165,8 @@ class Settings:
             llm_timeout=_env_int("LLM_TIMEOUT", 45),
             agent_enabled=_env_bool("AGENT_ENABLED", True),
             agent_max_steps=_env_int("AGENT_MAX_STEPS", 5),
+            ops_in_app=_env_bool("OPS_IN_APP", False),
+            ops_interval=_env_int("OPS_INTERVAL_SECONDS", 300),
             llm_translate_languages=tuple(x.strip() for x in _env("LLM_TRANSLATE_LANGUAGES", "hi,hinglish")
                                           .split(",") if x.strip()),
             gnani_base_url=_env("GNANI_BASE_URL", "https://api.vachana.ai").rstrip("/"),

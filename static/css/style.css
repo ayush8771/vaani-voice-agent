@@ -340,3 +340,11 @@ h1 {
     color: #a1aabf;
     text-decoration: underline;
 }
+
+/* Phase 3: language badge and "hearing" state */
+.lang-badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 0.75rem;
+              background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.35); }
+.status-pill.hearing #status-dot { color: #ff6b6b; animation: pulse 0.8s infinite; }
+.status-pill.hearing { border-color: rgba(255, 107, 107, 0.4); background: rgba(255, 107, 107, 0.06); }
+.status-pill.hearing #status-text { color: #ff6b6b; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

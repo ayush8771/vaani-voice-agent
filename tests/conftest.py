@@ -94,6 +94,33 @@ class FakeLLM:
         return "Hello! How can I help?"
 
 
+class FakeChat:
+    """Scripted replies for the agent's tool-calling LLM. Each entry is either
+    a list of (tool_name, arguments) calls or a final text reply."""
+
+    def __init__(self):
+        self.script = []
+        self.seen = []
+
+    def __call__(self, messages, tools=None, max_tokens=300, temperature=0.0):
+        self.seen.append(messages)
+        if not self.script:
+            return None  # behaves like the LLM being unavailable
+        step = self.script.pop(0)
+        if isinstance(step, str):
+            return {"content": step, "tool_calls": []}
+        return {"content": "", "tool_calls": [
+            {"id": f"call_{i}", "name": name, "arguments": args} for i, (name, args) in enumerate(step)]}
+
+
+@pytest.fixture(autouse=True)
+def fake_chat(monkeypatch):
+    import llm_client
+    fake = FakeChat()
+    monkeypatch.setattr(llm_client, "chat", fake)
+    return fake
+
+
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch):
     fake = FakeLLM()

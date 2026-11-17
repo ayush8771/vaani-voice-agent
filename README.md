@@ -25,13 +25,46 @@ End-to-end AI assistant for restaurant operations. Handles table reservations th
 
 ## 🧠 How It Works
 
-1. Customer interacts via web chat/voice interface
-2. VAANI classifies intent (book, cancel, menu, hours, FAQ)
-3. For bookings/cancellations, required slots collected step-by-step
-4. Data stored in SQLite; QR code generated for verification
-5. WhatsApp messages sent to customer and optionally owner
-6. For knowledge questions, RAG retrieves context from local documents
-7. Admin manages bookings through dashboard
+```
+Caller turn
+   |
+ Router (rules, instant)
+   |-- clear booking / cancel step ----> rule flow ---+
+   |                                                  |--> Vaani MCP tools --> DB / WhatsApp
+   '-- open-ended or multi-step -------> LLM agent ---+
+                                         (MCP tool calls)
+```
+
+1. The **router** reads each turn with fast rules (dates, times, party size, names, phones).
+2. Clear booking and cancel steps run on the **rule flow**: instant, no LLM needed.
+3. Open-ended or multi-step requests ("table for 4 tomorrow at 8, and do you have parking?",
+   "is my booking still on?", complaints) go to the **tool-calling agent** (qwen2.5:7b by default).
+4. Both paths act only through the **Vaani MCP server's tools**, which enforce the rules in code:
+   the agent can prepare a booking but only the caller's "yes" commits it; a cancellation needs a
+   WhatsApp code.
+5. When the agent only looks things up, Vaani speaks the tools' own verified answers, so the model
+   cannot add facts that are not in the restaurant's records.
+6. Every tool call is logged (secrets masked) and visible to owners at `/admin/agent`.
+
+### MCP tools
+
+| Tool | What it does | Guardrail |
+|------|--------------|-----------|
+| `check_availability` | Hours, party size and free tables; offers nearest times | Normalises any LLM arguments |
+| `get_opening_hours` | Hours and last seating for a date | — |
+| `prepare_booking` | Validates a booking and returns a read-back | Writes nothing |
+| `book_table` | Makes the booking | Needs a signed hold + `caller_confirmed=true`; not offered to Vaani's agent |
+| `get_booking_status` | Upcoming bookings for a number | Dates and times only, no names |
+| `start_cancellation` | Finds a booking and sends a 6-digit WhatsApp code | Cancels nothing |
+| `confirm_cancellation` | Cancels with the right code | Not offered to Vaani's agent |
+| `query_menu_faq` | Answers from the knowledge PDF | Grounded answers only |
+| `escalate_to_human` | Logs a staff handoff and notifies the owner | — |
+
+Use the same tools from any MCP client (Claude Desktop, MCP Inspector):
+
+```bash
+python -m vaani_mcp.server
+```
 
 ---
 
@@ -40,7 +73,8 @@ End-to-end AI assistant for restaurant operations. Handles table reservations th
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Flask, Werkzeug |
-| **AI/ML** | Ollama (llama3.2), ChromaDB, nomic-embed-text |
+| **AI/ML** | Ollama (qwen2.5:7b, any OpenAI-compatible LLM), ChromaDB, nomic-embed-text |
+| **Agent** | Model Context Protocol (official `mcp` SDK), native tool calling |
 | **Database** | SQLite with WAL mode |
 | **Messaging** | Twilio WhatsApp API |
 | **Voice** | Edge-TTS |
@@ -56,6 +90,11 @@ vaani-restaurant-automation/
 ├── wsgi.py                 # Production entry point (gunicorn wsgi:app)
 ├── manage.py               # Admin accounts, 2FA, index rebuild (CLI)
 ├── brain.py                # Conversation: read-back, corrections, OTP cancel, RAG
+├── agent.py                # Tool-calling LLM agent (MCP client, handoff to rule flow)
+├── vaani_mcp/              # Vaani MCP server + guarded tools (tools.py, server.py)
+├── llm_client.py           # One chat client: Ollama native or any OpenAI-compatible API
+├── slot_rules.py           # Rule-based reading of dates, times, party size, names, phones
+├── phrases.py              # Sentences shared by the rule flow, agent and tools
 ├── bookings.py             # Booking rules: atomic booking, cancel, restore, QR lookup
 ├── availability.py         # Opening hours, timezone, table assignment, alternatives
 ├── security.py             # Signed QR tokens, OTP codes, login lockout
@@ -123,7 +162,7 @@ pip install -r requirements.txt
 ```bash
 # Download from https://ollama.ai
 # Pull required models
-ollama pull llama3.2:3b
+ollama pull qwen2.5:7b
 ollama pull nomic-embed-text
 
 # Start Ollama server
@@ -145,8 +184,8 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 ```env
 FLASK_SECRET_KEY=your_64_char_secret_key_here
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=llama3.2:3b
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=qwen2.5:7b
 ```
 
 Set `OPENING_HOURS` and `TABLE_SEATS` to match your restaurant (see `.env.example`).
@@ -200,8 +239,11 @@ docker run -p 8000:8000 --env-file .env -e OLLAMA_URL=http://host.docker.interna
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `FLASK_SECRET_KEY` | Session and token signing key (≥32 chars) | Generate with `secrets.token_hex(32)` |
-| `OLLAMA_URL` | Ollama generate endpoint | `http://localhost:11434/api/generate` |
-| `OLLAMA_MODEL` | Chat model for conversations | `llama3.2:3b` |
+| `LLM_BASE_URL` | Any OpenAI-compatible endpoint (Ollama, Sarvam, ...) | `http://localhost:11434/v1` |
+| `LLM_MODEL` | One model for agent, slot fallback and menu answers | `qwen2.5:7b` |
+| `LLM_API_KEY` | API key for hosted providers | `ollama` for local |
+| `AGENT_ENABLED` | Turn the tool-calling agent on or off | `true` |
+| `OLLAMA_URL` | Ollama endpoint (used for knowledge-base embeddings) | `http://localhost:11434/api/generate` |
 
 ### Database & Capacity
 
@@ -257,6 +299,7 @@ docker run -p 8000:8000 --env-file .env -e OLLAMA_URL=http://host.docker.interna
 | `/admin/restore/<id>` | POST | Restore cancelled booking if its table is still free |
 | `/admin/export` | GET | Export bookings as CSV (owner only) |
 | `/admin/checkin/<signed>` | GET/POST | Staff check-in page opened by scanning the guest's QR |
+| `/admin/agent` | GET | Every tool call (rule path, agent, external MCP) and staff handoffs (owner only) |
 | `/health` | GET | Service health check |
 
 ---
@@ -315,7 +358,7 @@ ollama serve
 ollama list
 
 # Pull missing models
-ollama pull llama3.2:3b
+ollama pull qwen2.5:7b
 ollama pull nomic-embed-text
 ```
 

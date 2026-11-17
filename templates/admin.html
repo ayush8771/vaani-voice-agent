@@ -20,6 +20,7 @@
                 </div>
             </div>
             <div class="topbar-actions">
+                {% if role == 'owner' %}<a href="{{ url_for('admin_agent') }}" class="secondary-btn">Agent activity</a>{% endif %}
                 <span class="who">{{ admin_user }} ({{ role }})</span>
                 <form method="POST" action="{{ url_for('admin_logout') }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

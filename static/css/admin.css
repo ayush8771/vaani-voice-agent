@@ -717,3 +717,13 @@ tbody tr:hover td {
 .path-rules { background: #eef1f6; color: #34495e; }
 .path-agent { background: #e8f0fe; color: #1a56c4; }
 .path-mcp-external { background: #f3e8fd; color: #6b2fb3; }
+
+/* ── Phase 4: analytics ────────────────────────────────────────────── */
+.ask-form input[type=text] { flex: 1; min-width: 260px; }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.examples form.inline { margin: 0; }
+.chip-btn { border: 1px solid #d0d7e2; background: #f6f8fb; border-radius: 999px; padding: 4px 12px;
+            font-size: 0.8rem; cursor: pointer; }
+.chip-btn:hover { background: #eaf0f8; }
+.answer { font-size: 1.05rem; font-weight: 600; }
+pre.sql { background: #f6f8fb; padding: 10px; border-radius: 8px; white-space: pre-wrap; font-size: 0.8rem; }

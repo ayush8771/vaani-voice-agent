@@ -337,6 +337,27 @@ def _register_routes(app: Flask) -> None:
         return Response(output.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename={filename}"})
 
+    # ── Owner analytics: plain-language questions over the SQLite MCP server ──
+    @app.route("/admin/ask", methods=["GET", "POST"])
+    @require_role("owner")
+    @limiter.limit("20 per minute")
+    def admin_ask():
+        import analytics
+        result = None
+        if request.method == "POST":
+            question = (request.form.get("question") or "").strip()[:300]
+            if question:
+                result = analytics.answer(question)
+                audit(_actor(), "analytics", question[:120], _client_ip())
+        return render_template("analytics.html", result=result, examples=[
+            "Which time slots were busiest this week?",
+            "How many confirmed bookings do we have tomorrow?",
+            "What share of bookings were cancelled?",
+            "Which weekday gets the most guests?",
+            "How many returning customers do we have?",
+            "How many people are on the waitlist?",
+        ])
+
     # ── Agent activity (every tool call, rule path and agent path) ───────────
     @app.route("/admin/agent")
     @require_role("owner")

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel — AM Restaurant</title>
+    <title>Admin Panel — Vaani</title>
     <link rel="stylesheet" href="/static/css/admin.css">
 </head>
 <body>
@@ -12,14 +12,20 @@
 
         <header class="topbar">
             <div class="topbar-main">
-                <span class="identity-badge" aria-hidden="true">AM</span>
+                <span class="identity-badge" aria-hidden="true">V</span>
                 <div>
                     <p class="eyebrow">Reservation Operations</p>
                     <h1>Admin Control Room</h1>
                     <p>Review bookings, apply filters, and manage confirmations with confidence.</p>
                 </div>
             </div>
-            <a href="/admin/logout" class="logout-btn">Logout</a>
+            <div class="topbar-actions">
+                <span class="who">{{ admin_user }} ({{ role }})</span>
+                <form method="POST" action="{{ url_for('admin_logout') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="logout-btn">Logout</button>
+                </form>
+            </div>
         </header>
 
         <!-- ── Stats ─────────────────────────────────────────────────────── -->
@@ -83,6 +89,7 @@
 
             <button type="submit" class="primary-btn">Apply</button>
             <a href="/admin" class="secondary-btn">Reset</a>
+            {% if role == 'owner' %}
             <a
                 class="secondary-btn export-btn"
                 href="{{ url_for('admin_export',
@@ -91,6 +98,7 @@
                             date_from=filters.date_from,
                             date_to=filters.date_to) }}"
             >Export CSV</a>
+            {% endif %}
         </form>
 
         <div class="meta-row">
@@ -110,6 +118,7 @@
                         <th>Guests</th>
                         <th>Name</th>
                         <th>Phone</th>
+                        <th>Table</th>
                         <th>Status</th>
                         <th>Action</th>
                     </tr>
@@ -123,11 +132,13 @@
                         <td data-label="Guests">{{ b[3] }}</td>
                         <td data-label="Name">{{ b[4] }}</td>
                         <td data-label="Phone">{{ b[5] }}</td>
+                        <td data-label="Table">{{ b[7] }}</td>
                         <td data-label="Status">
                             <span class="status-pill
                                 {% if b[6] == 'confirmed' %}status-confirmed{% else %}status-cancelled{% endif %}">
                                 {{ b[6]|capitalize }}
                             </span>
+                            {% if b[8] %}<span class="checked-in">Checked in</span>{% endif %}
                         </td>
                         <td data-label="Action">
 
@@ -135,7 +146,7 @@
                             {% if b[6] == 'confirmed' %}
                             <form
                                 method="POST"
-                                action="{{ url_for('admin_cancel_route', id=b[0],
+                                action="{{ url_for('admin_cancel_route', booking_id=b[0],
                                             query=filters.query,
                                             status=filters.status,
                                             date_from=filters.date_from,
@@ -157,7 +168,7 @@
                             {% else %}
                             <form
                                 method="POST"
-                                action="{{ url_for('admin_restore_route', id=b[0],
+                                action="{{ url_for('admin_restore_route', booking_id=b[0],
                                             query=filters.query,
                                             status=filters.status,
                                             date_from=filters.date_from,
@@ -225,6 +236,20 @@
             <h3>No bookings found yet</h3>
             <p>Adjust filters or click Reset to view all reservations.</p>
         </div>
+        {% endif %}
+
+        {% if audit_rows %}
+        <section class="audit">
+            <h3>Recent admin activity</h3>
+            <table>
+                <thead><tr><th>Time (UTC)</th><th>Admin</th><th>Action</th><th>Target</th></tr></thead>
+                <tbody>
+                {% for a in audit_rows %}
+                    <tr><td>{{ a[0] }}</td><td>{{ a[1] }}</td><td>{{ a[2] }}</td><td>{{ a[3] or '' }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
         {% endif %}
 
     </section>

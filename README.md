@@ -40,11 +40,11 @@ End-to-end AI assistant for restaurant operations. Handles table reservations th
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Flask, Werkzeug |
-| **AI/ML** | Ollama (llama3.2), ChromaDB, sentence-transformers, nomic-embed-text |
+| **AI/ML** | Ollama (llama3.2), ChromaDB, nomic-embed-text |
 | **Database** | SQLite with WAL mode |
 | **Messaging** | Twilio WhatsApp API |
 | **Voice** | Edge-TTS |
-| **Security** | Flask-WTF (CSRF), Flask-Limiter |
+| **Security** | Flask-WTF (CSRF), Flask-Limiter, itsdangerous, pyotp |
 
 ---
 
@@ -52,14 +52,22 @@ End-to-end AI assistant for restaurant operations. Handles table reservations th
 
 ```
 vaani-restaurant-automation/
-├── app.py                  # Flask app, routes, security, admin APIs
-├── brain.py                # Conversation logic: intent, slots, RAG answers
-├── database.py             # SQLite operations: CRUD, search, export
+├── app.py                  # Flask app factory, routes, admin, check-in
+├── wsgi.py                 # Production entry point (gunicorn wsgi:app)
+├── manage.py               # Admin accounts, 2FA, index rebuild (CLI)
+├── brain.py                # Conversation: read-back, corrections, OTP cancel, RAG
+├── bookings.py             # Booking rules: atomic booking, cancel, restore, QR lookup
+├── availability.py         # Opening hours, timezone, table assignment, alternatives
+├── security.py             # Signed QR tokens, OTP codes, login lockout
+├── admins.py               # Admin accounts: hashed passwords, roles, TOTP 2FA
+├── database.py             # SQLite storage and migrations only
 ├── rag_store.py            # ChromaDB indexing + retrieval pipeline
-├── whatsapp.py             # Twilio WhatsApp notifications
-├── qr_tool.py              # QR code generation
-├── config.py               # Environment-based configuration
+├── config.py               # All settings, read from the environment
+├── services/               # Side effects: WhatsApp (Twilio), QR images
+├── tests/                  # pytest suite (no Ollama/Twilio needed)
+├── Dockerfile              # Container image (gunicorn)
 ├── requirements.txt        # Python dependencies
+├── requirements-dev.txt    # + pytest
 ├── .env.example            # Environment template (safe to commit)
 ├── knowledge/              # Restaurant docs (.pdf/.txt) — add yours here
 │   └── AM_Restaurant_Knowledge.pdf
@@ -70,7 +78,6 @@ vaani-restaurant-automation/
 ├── static/                 # Static assets
 │   ├── css/
 │   ├── js/
-│   └── qr/                # Generated QR codes (gitignored)
 ├── chroma_db/             # Vector store (auto-generated, gitignored)
 └── bookings.db            # SQLite database (gitignored)
 ```
@@ -89,8 +96,8 @@ vaani-restaurant-automation/
 ### 1. Clone repository
 
 ```bash
-git clone https://github.com/Mounesh05/vaani-restaurant-automation.git
-cd vaani-restaurant-automation
+git clone https://github.com/ayush8771/vaani-voice-agent.git
+cd vaani-voice-agent
 ```
 
 ### 2. Create virtual environment
@@ -138,23 +145,45 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 ```env
 FLASK_SECRET_KEY=your_64_char_secret_key_here
-ADMIN_PIN=your_admin_pin
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=llama3.2:3b
+```
+
+Set `OPENING_HOURS` and `TABLE_SEATS` to match your restaurant (see `.env.example`).
+
+### 5b. Create the first admin account
+
+```bash
+python manage.py create-admin --role owner
+# Optional but recommended: two-factor login with an authenticator app
+python manage.py enable-2fa --username YOUR_USERNAME
 ```
 
 ### 6. Initialize RAG knowledge base
 
 ```bash
-# Ensure knowledge docs are in knowledge/ folder
-# Build vector index
-python rag_store.py
+# Ensure knowledge docs are in knowledge/ folder, then build the vector index
+python manage.py build-index
 ```
 
 ### 7. Run application
 
 ```bash
 python app.py
+```
+
+### 8. Run the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+### Docker
+
+```bash
+docker build -t vaani .
+docker run -p 8000:8000 --env-file .env -e OLLAMA_URL=http://host.docker.internal:11434/api/generate -v vaani-data:/app/data vaani
 ```
 
 **Access points:**
@@ -170,8 +199,7 @@ python app.py
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `FLASK_SECRET_KEY` | Session encryption key (≥32 chars) | Generate with `secrets.token_hex(32)` |
-| `ADMIN_PIN` | Admin dashboard access PIN | `123456` |
+| `FLASK_SECRET_KEY` | Session and token signing key (≥32 chars) | Generate with `secrets.token_hex(32)` |
 | `OLLAMA_URL` | Ollama generate endpoint | `http://localhost:11434/api/generate` |
 | `OLLAMA_MODEL` | Chat model for conversations | `llama3.2:3b` |
 
@@ -180,7 +208,12 @@ python app.py
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PATH` | `bookings.db` | SQLite database file path |
-| `MAX_RESTAURANT_CAPACITY` | `5` | Max confirmed bookings per time slot |
+| `TABLE_SEATS` | `2,2,4,4,4,6,6,8,10` | Seats per table, one number per table |
+| `DINING_MINUTES` | `90` | How long a booking holds its table |
+| `OPENING_HOURS` | `START_HOUR`–`END_HOUR` daily | JSON of opening windows per day; missing day = closed |
+| `TIMEZONE` | `Asia/Kolkata` | Restaurant time zone |
+| `LARGE_GROUP_THRESHOLD` | `10` | Larger groups are sent to private dining |
+| `RATELIMIT_STORAGE_URI` | `memory://` | Use `redis://...` to share limits across workers |
 
 ### RAG Tuning
 
@@ -197,7 +230,7 @@ python app.py
 | `TWILIO_AUTH_TOKEN` | Twilio auth token |
 | `TWILIO_WHATSAPP_NUMBER` | Twilio WhatsApp sender number |
 | `OWNER_WHATSAPP` | Restaurant owner number (receives copies) |
-| `NGROK_URL` | Public URL for QR code delivery in messages |
+| `PUBLIC_BASE_URL` | Public HTTPS URL of the app (for QR image links); `NGROK_URL` still works |
 
 ### Other Settings
 
@@ -216,11 +249,14 @@ python app.py
 | `/` | GET | Customer voice interface |
 | `/send_message` | POST | Main AI conversation endpoint |
 | `/reset_state` | POST | Clear conversation state |
-| `/admin/login` | GET/POST | Admin authentication |
-| `/admin` | GET | Admin dashboard with filters |
+| `/qr/<signed>.png` | GET | QR image for a booking (unguessable signed URL) |
+| `/admin/login` | GET/POST | Username, password and optional 2FA code |
+| `/admin/logout` | POST | Log out |
+| `/admin` | GET | Admin dashboard with filters (owners also see the audit log) |
 | `/admin/cancel/<id>` | POST | Cancel booking (CSRF protected) |
-| `/admin/restore/<id>` | POST | Restore cancelled booking |
-| `/admin/export` | GET | Export bookings as CSV |
+| `/admin/restore/<id>` | POST | Restore cancelled booking if its table is still free |
+| `/admin/export` | GET | Export bookings as CSV (owner only) |
+| `/admin/checkin/<signed>` | GET/POST | Staff check-in page opened by scanning the guest's QR |
 | `/health` | GET | Service health check |
 
 ---
@@ -240,12 +276,14 @@ python app.py
 ### Admin Dashboard
 
 1. Navigate to `/admin/login`
-2. Enter admin PIN
+2. Sign in with your username, password and (if enabled) authenticator code
 3. Features:
    - View all bookings with real-time stats
    - Filter by name/phone/date/status
    - Cancel or restore bookings
-   - Export filtered results to CSV
+   - Export filtered results to CSV (owners)
+   - Scan a guest's QR to check them in
+   - Audit log of admin actions (owners)
    - Pagination support
 
 ---
@@ -254,9 +292,13 @@ python app.py
 
 - ✅ **CSRF Protection** — All state-changing operations require valid tokens
 - ✅ **Rate Limiting** — 300 requests/hour, 60/minute per IP
-- ✅ **Brute-Force Protection** — Admin login lockout after 5 failed attempts (5-min timeout)
+- ✅ **Admin Accounts** — Hashed passwords, owner/staff roles, optional TOTP two-factor, audit log
+- ✅ **Brute-Force Protection** — Lockout after 5 failed logins, stored in the database (survives restarts)
+- ✅ **Signed QR Codes** — Unguessable, tamper-proof check-in links; no QR images stored publicly
+- ✅ **Verified Cancellation** — Cancelling by voice needs a 6-digit code sent to the booked WhatsApp number
+- ✅ **Atomic Bookings** — Table check and insert run in one transaction, so no double-booking
 - ✅ **Secure Sessions** — HTTPOnly, SameSite, Secure flags in production
-- ✅ **Security Headers** — X-Content-Type-Options, X-Frame-Options, X-XSS-Protection
+- ✅ **Security Headers** — X-Content-Type-Options, X-Frame-Options, Referrer-Policy, HSTS in production
 - ✅ **Input Validation** — Length caps, type validation, SQL injection prevention
 
 ---
@@ -284,13 +326,13 @@ ollama pull nomic-embed-text
 ls knowledge/
 
 # Rebuild vector index
-python rag_store.py
+python manage.py build-index
 ```
 
 ### WhatsApp Messages Not Sending
 
 - Verify Twilio credentials in `.env`
-- Check `NGROK_URL` is set and reachable
+- Check `PUBLIC_BASE_URL` is set and reachable
 - Ensure phone numbers include country code (e.g., `+919876543210`)
 - Confirm ngrok is running if testing locally
 
@@ -306,10 +348,11 @@ python rag_store.py
 
 ## 📝 Notes
 
-- **Large Groups**: Bookings above 10 guests redirected to private dining contact
-- **First Run**: If `chroma_db/` missing, app attempts to build index on startup
-- **Time Zones**: All times stored in `Asia/Kolkata` by default (configurable in `config.py`)
-- **QR Codes**: Generated in `static/qr/` — automatically cleaned up via gitignore
+- **Large Groups**: Bookings above `LARGE_GROUP_THRESHOLD` guests are redirected to private dining
+- **First Run**: If `chroma_db/` is missing, the app tries to build the index on startup (needs Ollama)
+- **Time Zones**: Booking rules use `TIMEZONE` (default `Asia/Kolkata`)
+- **QR Codes**: Generated on request from a signed token; nothing is written to disk
+- **Old databases**: New columns are added automatically on startup; old bookings have no table assigned
 
 ---
 
@@ -336,7 +379,6 @@ This project developed for academic/research purposes. See `LICENSE` file for de
 - **Ollama** and **ChromaDB** for local-first AI retrieval
 - **Twilio** for WhatsApp Business API integration
 - **Edge-TTS** for natural voice synthesis
-- **sentence-transformers** for semantic embeddings
 
 ---
 

@@ -1,15 +1,143 @@
-﻿import os
+﻿"""
+config.py — single source of truth for every setting Vaani reads from the
+environment. Every other module imports `settings` from here instead of
+calling os.getenv() itself.
+"""
+
+import json
+import os
+from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-RESTAURANT_NAME = os.getenv("RESTAURANT_NAME", "AM Restaurant")
-TOTAL_TABLES = int(os.getenv("TOTAL_TABLES", 5))
-START_HOUR = int(os.getenv("START_HOUR", 10))
-END_HOUR = int(os.getenv("END_HOUR", 22))
-TIMEZONE = os.getenv("TIMEZONE", "Asia/Kolkata")
+DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
-TWILIO_SID = os.getenv("TWILIO_SID")
-TWILIO_AUTH = os.getenv("TWILIO_AUTH")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM")
-TWILIO_WHATSAPP_TO = os.getenv("TWILIO_WHATSAPP_TO")
+
+def _env(name: str, default: str = "", *fallbacks: str) -> str:
+    """Read an env var, trying older names as fallbacks (for old .env files)."""
+    for key in (name, *fallbacks):
+        value = os.getenv(key)
+        if value is not None and value.strip() != "":
+            return value.strip()
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(_env(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return _env(name, "true" if default else "false").lower() in ("1", "true", "yes", "on")
+
+
+def _default_hours(start_hour: int, end_hour: int) -> dict:
+    window = [[f"{start_hour:02d}:00", f"{end_hour:02d}:00"]]
+    return {day: window for day in DAY_KEYS}
+
+
+def _parse_hours(raw: str, start_hour: int, end_hour: int) -> dict:
+    """
+    OPENING_HOURS is optional JSON, e.g.
+    {"mon": [["12:00","15:30"],["19:00","23:00"]], "tue": [...], ... "sun": []}
+    A missing day means closed. Without it, START_HOUR-END_HOUR applies daily.
+    """
+    if not raw:
+        return _default_hours(start_hour, end_hour)
+    data = json.loads(raw)
+    return {day: [list(w) for w in data.get(day, [])] for day in DAY_KEYS}
+
+
+def _parse_tables(raw: str) -> list:
+    return [int(x) for x in raw.split(",") if x.strip().isdigit() and int(x) > 0]
+
+
+@dataclass
+class Settings:
+    # Restaurant
+    restaurant_name: str
+    restaurant_phone: str
+    private_dining_email: str
+    timezone: str
+    opening_hours: dict
+    table_seats: list
+    dining_minutes: int
+    large_group_threshold: int
+    max_party_size: int
+
+    # App and security
+    flask_secret_key: str
+    is_production: bool
+    db_path: str
+    public_base_url: str
+    ratelimit_storage_uri: str
+    tts_enabled: bool
+    rag_autobuild: bool
+    otp_ttl_minutes: int
+    otp_max_attempts: int
+    otp_max_per_hour: int
+    otp_dev_echo: bool
+    login_max_fails: int
+    login_lockout_seconds: int
+
+    # LLM
+    ollama_url: str
+    ollama_model: str
+
+    # WhatsApp (Twilio)
+    twilio_sid: str
+    twilio_auth_token: str
+    twilio_whatsapp_number: str
+    owner_whatsapp: str
+
+    tz: ZoneInfo = field(init=False, repr=False)
+
+    def __post_init__(self):
+        self.tz = ZoneInfo(self.timezone)
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(self.twilio_sid and self.twilio_auth_token and self.twilio_whatsapp_number)
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        start_hour = _env_int("START_HOUR", 10)
+        end_hour = _env_int("END_HOUR", 22)
+        return cls(
+            restaurant_name=_env("RESTAURANT_NAME", "AM Restaurant"),
+            restaurant_phone=_env("RESTAURANT_PHONE", "+91-98765-43210"),
+            private_dining_email=_env("PRIVATE_DINING_EMAIL", "events@amrestaurant.in"),
+            timezone=_env("TIMEZONE", "Asia/Kolkata"),
+            opening_hours=_parse_hours(_env("OPENING_HOURS"), start_hour, end_hour),
+            table_seats=_parse_tables(_env("TABLE_SEATS", "2,2,4,4,4,6,6,8,10")),
+            dining_minutes=_env_int("DINING_MINUTES", 90),
+            large_group_threshold=_env_int("LARGE_GROUP_THRESHOLD", 10),
+            max_party_size=_env_int("MAX_PARTY_SIZE", 100),
+            flask_secret_key=_env("FLASK_SECRET_KEY"),
+            is_production=_env("FLASK_ENV", "development").lower() == "production",
+            db_path=_env("DB_PATH", "bookings.db"),
+            public_base_url=_env("PUBLIC_BASE_URL", "", "NGROK_URL").rstrip("/"),
+            ratelimit_storage_uri=_env("RATELIMIT_STORAGE_URI", "memory://"),
+            tts_enabled=_env_bool("TTS_ENABLED", True),
+            rag_autobuild=_env_bool("RAG_AUTOBUILD", True),
+            otp_ttl_minutes=_env_int("OTP_TTL_MINUTES", 10),
+            otp_max_attempts=_env_int("OTP_MAX_ATTEMPTS", 5),
+            otp_max_per_hour=_env_int("OTP_MAX_PER_HOUR", 3),
+            otp_dev_echo=_env_bool("OTP_DEV_ECHO", False),
+            login_max_fails=_env_int("LOGIN_MAX_FAILS", 5),
+            login_lockout_seconds=_env_int("LOGIN_LOCKOUT_SECONDS", 300),
+            ollama_url=_env("OLLAMA_URL", "http://localhost:11434/api/generate"),
+            ollama_model=_env("OLLAMA_MODEL", "llama3.2:3b"),
+            twilio_sid=_env("TWILIO_SID"),
+            twilio_auth_token=_env("TWILIO_AUTH_TOKEN", "", "TWILIO_AUTH"),
+            twilio_whatsapp_number=_env("TWILIO_WHATSAPP_NUMBER", "", "TWILIO_WHATSAPP_FROM"),
+            owner_whatsapp=_env("OWNER_WHATSAPP"),
+        )
+
+
+settings = Settings.from_env()

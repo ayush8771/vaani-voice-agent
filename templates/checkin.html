@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guest Check-in — Vaani</title>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+<div class="login-shell">
+    <section class="login-card">
+        <div class="login-brand">
+            <span class="identity-badge" aria-hidden="true">V</span>
+            <div>
+                <p class="eyebrow">Front desk</p>
+                <h2>Guest check-in</h2>
+            </div>
+        </div>
+
+        {% if error %}
+        <div class="error-msg" role="alert">{{ error }}</div>
+        {% else %}
+        <dl class="checkin-details">
+            <dt>Name</dt><dd>{{ booking.name }}</dd>
+            <dt>Date</dt><dd>{{ booking.date }}</dd>
+            <dt>Time</dt><dd>{{ booking.time }}</dd>
+            <dt>Guests</dt><dd>{{ booking.people }}</dd>
+            <dt>Table</dt><dd>{{ booking.table }}</dd>
+            <dt>Status</dt><dd>{{ booking.status|capitalize }}</dd>
+        </dl>
+
+        {% if message %}<div class="success-msg" role="status">{{ message }}</div>{% endif %}
+
+        {% if booking.status != 'confirmed' %}
+        <div class="error-msg" role="alert">This booking was cancelled.</div>
+        {% elif booking.checked_in_at %}
+        <div class="success-msg">Checked in at {{ booking.checked_in_at }}.</div>
+        {% else %}
+        <form method="POST" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="primary-btn">Check in guest</button>
+        </form>
+        {% endif %}
+        {% endif %}
+
+        <a href="/admin" class="back-link">← Back to dashboard</a>
+    </section>
+</div>
+</body>
+</html>

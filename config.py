@@ -93,6 +93,7 @@ class Settings:
     llm_timeout: int
     agent_enabled: bool
     agent_max_steps: int
+    llm_translate_languages: tuple
 
     # Speech (Gnani: Prisma speech-to-text, Timbre text-to-speech)
     gnani_base_url: str
@@ -162,11 +163,13 @@ class Settings:
             llm_timeout=_env_int("LLM_TIMEOUT", 45),
             agent_enabled=_env_bool("AGENT_ENABLED", True),
             agent_max_steps=_env_int("AGENT_MAX_STEPS", 5),
+            llm_translate_languages=tuple(x.strip() for x in _env("LLM_TRANSLATE_LANGUAGES", "hi,hinglish")
+                                          .split(",") if x.strip()),
             gnani_base_url=_env("GNANI_BASE_URL", "https://api.vachana.ai").rstrip("/"),
             gnani_stt_key=_env("GNANI_STT_KEY", "", "GNANI_API_KEY"),
             gnani_tts_key=_env("GNANI_TTS_KEY", "", "GNANI_API_KEY"),
             stt_model=_env("GNANI_STT_MODEL", "prisma-v3.0"),
-            stt_language=_env("GNANI_STT_LANGUAGE", "hi-IN,en-IN"),
+            stt_language=_env("GNANI_STT_LANGUAGE", "hi-IN,en-IN,kn-IN"),
             stt_format=_env("GNANI_STT_FORMAT", "transcribe"),
             tts_model=_env("GNANI_TTS_MODEL", "timbre-v3.0"),
             tts_voice=_env("GNANI_TTS_VOICE", "Shivani"),

@@ -100,7 +100,7 @@ def run_case(case: dict, verbose: bool = False) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run Vaani's multilingual evaluation set")
-    parser.add_argument("--lang", choices=["en", "hi", "hinglish"])
+    parser.add_argument("--lang", choices=["en", "hi", "hinglish", "kn"])
     parser.add_argument("--case")
     parser.add_argument("--model")
     parser.add_argument("--base-url")
@@ -132,7 +132,7 @@ def main(argv=None) -> int:
     lines = [f"# Vaani evaluation — {settings.llm_model}", "",
              "| Language | Passed | Pass rate | Avg seconds / conversation | Slowest turn (s) |",
              "|---|---|---|---|---|"]
-    for lang in ("en", "hi", "hinglish", None):
+    for lang in ("en", "hi", "hinglish", "kn", None):
         subset = [r for r in results if lang is None or r["lang"] == lang]
         if not subset:
             continue

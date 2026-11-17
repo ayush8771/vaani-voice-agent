@@ -68,7 +68,7 @@ python -m vaani_mcp.server
 
 ---
 
-### Languages: English, Hindi, Hinglish
+### Languages: English, Hindi, Hinglish, Kannada
 
 ```
 caller audio --> Gnani Prisma (speech-to-text, detects the language every turn)
@@ -82,19 +82,22 @@ caller audio --> Gnani Prisma (speech-to-text, detects the language every turn)
                Gnani Timbre (text-to-speech) --> caller
 ```
 
-- **Auto-detect:** Prisma v3.0 (`indic-auto`) detects the language of every utterance. Short replies
+- **Auto-detect:** Prisma v3.0 detects the language of every utterance among Hindi, English and Kannada
+  (`GNANI_STT_LANGUAGE=hi-IN,en-IN,kn-IN`). Short replies
   ("haan", a name, a phone number) never switch the session language, so one misdetection cannot flip a call.
 - **Understanding:** common booking words are converted by a dictionary (`कल`, `बजे`, `लोग`, `हाँ`,
   `kal`, `baje`, `log`, Devanagari digits, `साढ़े सात`), so most turns need no LLM. Longer Hindi sentences
   are translated by the LLM.
 - **Replying:** every fixed sentence (questions, read-back, confirmations, errors) has a hand-written
-  Hindi and Hinglish version, with dates and times spoken naturally (`गुरुवार, 19 नवंबर`, `शाम 7 बजे`).
-  Only free-form sentences such as menu answers are translated by the LLM (cached).
+  Hindi, Hinglish and Kannada version (`i18n_kn.py` for Kannada), with dates and times spoken naturally (`गुरुवार, 19 नवंबर`, `शाम 7 बजे`).
+  Free-form sentences such as menu answers are LLM-translated only into languages the model writes
+  well (`LLM_TRANSLATE_LANGUAGES`, default `hi,hinglish`); qwen2.5:7b writes broken Kannada, so Kannada
+  callers hear those answers in English until a stronger model (e.g. Sarvam) is configured.
 - **Without a Gnani key** Vaani uses the browser's speech recognition and Edge-TTS.
 
 ### Evaluation set
 
-45 scripted conversations (15 English, 15 Hindi, 15 Hinglish) run against the real LLM, checking the
+55 scripted conversations (15 English, 15 Hindi, 15 Hinglish, 10 Kannada) run against the real LLM, checking the
 booking made, the reply language and the tools called:
 
 ```bash
@@ -132,7 +135,8 @@ vaani-restaurant-automation/
 ├── llm_client.py           # One chat client: Ollama native or any OpenAI-compatible API
 ├── slot_rules.py           # Rule-based reading of dates, times, party size, names, phones
 ├── phrases.py              # Sentences shared by the rule flow, agent and tools
-├── i18n.py                 # Language detection, Hindi/Hinglish <-> English, reply localisation
+├── i18n.py                 # Language detection, Hindi/Hinglish/Kannada <-> English, reply localisation
+├── i18n_kn.py              # Kannada language pack (sentences, booking words, numbers)
 ├── evals/                  # Multilingual evaluation set (cases.json) and runner (run.py)
 ├── bookings.py             # Booking rules: atomic booking, cancel, restore, QR lookup
 ├── availability.py         # Opening hours, timezone, table assignment, alternatives
@@ -309,7 +313,7 @@ docker run -p 8000:8000 --env-file .env -e OLLAMA_URL=http://host.docker.interna
 |----------|---------|-------------|
 | `GNANI_API_KEY` | — | One key for both (or `GNANI_STT_KEY` / `GNANI_TTS_KEY`). Empty = browser STT + Edge-TTS |
 | `GNANI_STT_MODEL` | `prisma-v3.0` | Speech-to-text model |
-| `GNANI_STT_LANGUAGE` | `indic-auto` | Auto-detect the language each turn (or a fixed code like `hi-IN`) |
+| `GNANI_STT_LANGUAGE` | `hi-IN,en-IN,kn-IN` | Languages to detect each turn (up to 4; `indic-auto` = all 10, misfires more) |
 | `GNANI_TTS_MODEL` | `timbre-v3.0` | Text-to-speech model |
 | `GNANI_TTS_VOICE` | `Shivani` | Any Timbre v3.0 voice (each speaks all 10 languages) |
 

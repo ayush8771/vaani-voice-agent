@@ -19,11 +19,12 @@ import re
 from functools import lru_cache
 from typing import Optional
 
+import i18n_kn as kn
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-LANGUAGES = ("en", "hi", "hinglish")
+LANGUAGES = ("en", "hi", "hinglish", "kn")
 DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 _LETTER = re.compile(r"[^\W\d_]")
 
@@ -36,13 +37,15 @@ _HINGLISH_MARKERS = re.compile(
 
 # ── 1. LANGUAGE DETECTION (sticky) ────────────────────────────────────────────
 def detect(text: str, stt_code: Optional[str] = None) -> str:
-    """Best guess for one utterance: en, hi, hinglish or other (another Indian language)."""
+    """Best guess for one utterance: en, hi, hinglish, kn or other (another Indian language)."""
     letters = _LETTER.findall(text or "")
     if letters and sum(1 for ch in letters if DEVANAGARI.match(ch)) / len(letters) > 0.3:
         return "hi"
+    if letters and sum(1 for ch in letters if kn.KANNADA.match(ch)) / len(letters) > 0.3:
+        return "kn"
     if len(_HINGLISH_MARKERS.findall(text or "")) >= 2:
         return "hinglish"
-    if stt_code and stt_code not in ("en-IN", "hi-IN"):
+    if stt_code and stt_code not in ("en-IN", "hi-IN", "kn-IN"):
         return "other"
     if stt_code == "hi-IN" and letters:
         return "hinglish"          # Hindi detected but written in Latin script
@@ -109,8 +112,10 @@ _ROMAN_NUM_CONTEXT = re.compile(
 
 
 def normalise(text: str) -> str:
-    """Rule-based Hindi/Hinglish -> English for the words that matter to bookings."""
-    out = (text or "").translate(_DEV_DIGITS)
+    """Rule-based Hindi/Hinglish/Kannada -> English for the words that matter to bookings."""
+    out = (text or "").translate(_DEV_DIGITS).translate(kn.DIGITS)
+    if kn.KANNADA.search(out):
+        out = _normalise_kannada(out)
     for pattern, repl in _PHRASES:          # phrases first: "कर दो" is "yes", not "कर 2"
         out = pattern.sub(repl, out)
     for word, n in sorted(_HI_NUMBERS.items(), key=lambda kv: -len(kv[0])):
@@ -123,10 +128,28 @@ def normalise(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+_KN_PHRASES = [(re.compile(p), r) for p, r in kn.PHRASES]
+_KN_HALVES = sorted(kn.half_past_patterns(), key=lambda kv: -len(kv[0]))
+
+
+def _normalise_kannada(out: str) -> str:
+    for word, value in _KN_HALVES:                     # ಏಳುವರೆ -> 7:30
+        out = out.replace(word, f" {value} ")
+    for word, n in sorted(kn.PEOPLE_WORDS.items(), key=lambda kv: -len(kv[0])):
+        out = out.replace(word, f" {n} people ")       # ಇಬ್ಬರು -> 2 people
+    for pattern, repl in _KN_PHRASES:
+        out = pattern.sub(repl, out)
+    for word, n in sorted(kn.NUMBERS.items(), key=lambda kv: -len(kv[0])):
+        out = re.sub(rf"(?<![ಀ-೿]){word}(?![ಀ-೿])", f" {n} ", out)
+    return re.sub(r"\s+", " ", out)
+
+
 def _needs_llm(normalised: str, lang: str, asked: Optional[str]) -> bool:
     if asked in ("name", "phone") or lang == "en":
         return False
     leftover = DEVANAGARI.sub("", re.sub(r"my name is .*", "", normalised))
+    if lang == "kn":
+        return bool(kn.KANNADA.search(re.sub(r"my name is .*", "", normalised)))
     if lang == "hi":
         return bool(DEVANAGARI.search(re.sub(r"my name is .*", "", normalised)))
     # Hinglish: translate longer sentences that still carry Hindi grammar
@@ -191,12 +214,13 @@ def _period(h: int, ampm: str, lang: str) -> str:
         # as people say it: 7 PM is "shaam", 8 PM onwards is "raat"
         key = "afternoon" if h in (12, 1, 2, 3) else "evening" if h in (4, 5, 6, 7) else "night"
     return {"hi": {"morning": "सुबह", "afternoon": "दोपहर", "evening": "शाम", "night": "रात"},
-            "hinglish": {"morning": "subah", "afternoon": "dopahar", "evening": "shaam", "night": "raat"}}[lang][key]
+            "hinglish": {"morning": "subah", "afternoon": "dopahar", "evening": "shaam", "night": "raat"},
+            "kn": kn.PERIODS}[lang][key]
 
 
-def local_times(text: str, lang: str) -> str:
-    """'7:30 PM' -> 'शाम 7:30 बजे' / 'shaam 7:30 baje'."""
-    word = "बजे" if lang == "hi" else "baje"
+def local_times(text: str, lang: str, at: bool = True) -> str:
+    """'7:30 PM' -> 'शाम 7:30 बजे' / 'shaam 7:30 baje' / 'ಸಂಜೆ 7:30 ಗಂಟೆಗೆ' (ಗಂಟೆ when at=False)."""
+    word = {"hi": "बजे", "hinglish": "baje", "kn": kn.HOUR_AT if at else kn.HOUR}[lang]
 
     def repl(m):
         h, mins, ampm = int(m.group(1)), m.group(2), m.group(3)
@@ -213,12 +237,20 @@ def local_date(text: str, lang: str) -> str:
     day, num, month = m.groups()
     if lang == "hi":
         return f"{_HI_DAYS.get(day, day)}, {num} {_HI_MONTHS.get(month, month)}"
+    if lang == "kn":
+        return f"{kn.DAYS.get(day, day)}, {num} {kn.MONTHS.get(month, month)}"
     return f"{day}, {num} {month}"
 
 
 def _local_value(kind: str, value: str, lang: str) -> str:
     if kind == "date":
         return local_date(value, lang)
+    if lang == "kn" and kind in ("hours", "times"):
+        out = local_times(value, lang, at=False)
+        if kind == "hours":                     # "X to Y" -> "Xಯಿಂದ Yಯವರೆಗೆ"
+            out = re.sub(r"(.+?) to (.+?)(?= and |$)", rf"\1{kn.FROM} \2{kn.UNTIL}", out)
+            return out.replace(" and ", kn.AND)
+        return out.replace(" or ", kn.OR)
     if kind in ("time", "times", "hours"):
         out = local_times(value, lang)
         if kind == "hours":
@@ -368,7 +400,9 @@ def _compile(template: str):
     return re.compile(f"^{pattern}$"), names
 
 
-_COMPILED = [(_compile(en), hi, hinglish) for en, (hi, hinglish) in SENTENCES.items()]
+_COMPILED = [(_compile(en), {"hi": hi, "hinglish": hinglish, "kn": kn.SENTENCES.get(en)})
+             for en, (hi, hinglish) in SENTENCES.items()]
+_NOW = {"hi": "अब, ", "hinglish": "Ab, ", "kn": kn.NOW}
 
 
 def _split_sentences(text: str) -> list:
@@ -379,44 +413,68 @@ def _from_table(sentence: str, lang: str) -> Optional[str]:
     prefix = ""
     if sentence.startswith("Now, "):                       # "Now, what date would you ..."
         sentence = sentence[5].upper() + sentence[6:]
-        prefix = "अब, " if lang == "hi" else "Ab, "
-    for (regex, names), hi, hinglish in _COMPILED:
+        prefix = _NOW[lang]
+    for (regex, names), targets in _COMPILED:
         m = regex.match(sentence)
-        if m:
-            target = hi if lang == "hi" else hinglish
+        if m and targets.get(lang):
             values = {n: _local_value(_TYPED.get(n, "text"), m.group(n), lang) for n in names}
-            return prefix + target.format(**values)
+            return prefix + targets[lang].format(**values)
     return None
+
+
+_TARGETS = {
+    "hi": "Hindi in Devanagari script, polite (aap)",
+    "hinglish": "Hinglish: Hindi written in Latin script the way people text in India, keeping common English words",
+    "kn": "Kannada in Kannada script, polite (neevu)",
+}
 
 
 @lru_cache(maxsize=1024)
 def _llm_from_english(sentence: str, lang: str) -> Optional[str]:
+    """LLM translation, accepted only if it is written in the right script.
+    Small models sometimes answer a Kannada request in Hindi; then we retry once
+    and otherwise keep the English sentence (right words beat the wrong language)."""
     import llm_client
-    target = ("Hindi in Devanagari script, polite (aap)" if lang == "hi"
-              else "Hinglish: Hindi written in Latin script the way people text in India, keeping common English words")
-    return llm_client.complete(
-        sentence,
-        system=(f"Translate this restaurant assistant's sentence into {target}. Keep names, numbers, prices, "
-                "phone numbers and email addresses exactly. Output only the translation."),
-        max_tokens=200,
-    )
+    system = (f"Translate this restaurant assistant's sentence into {_TARGETS[lang]}. Keep names, numbers, "
+              "prices, phone numbers and email addresses exactly. Output only the translation.")
+    for attempt in range(2):
+        out = llm_client.complete(sentence, system=system, max_tokens=200)
+        if out and _right_script(out, lang):
+            return out
+        system += f" The answer MUST be in {_TARGETS[lang].split(',')[0]}; do not use any other language."
+    logger.warning("No %s translation in the right script for %r; keeping English", lang, sentence[:60])
+    return None
+
+
+def _right_script(text: str, lang: str) -> bool:
+    letters = _LETTER.findall(text)
+    if not letters:
+        return True
+    share = {"hi": DEVANAGARI, "kn": kn.KANNADA}.get(lang)
+    if share is None:                           # Hinglish: Latin script, no Devanagari/Kannada
+        return not DEVANAGARI.search(text) and not kn.KANNADA.search(text)
+    return sum(1 for ch in letters if share.match(ch)) / len(letters) > 0.5
 
 
 def localise(reply: str, lang: str) -> str:
     """The English reply in the caller's language."""
-    if lang not in ("hi", "hinglish") or not reply:
+    if lang not in ("hi", "hinglish", "kn") or not reply:
         return reply
     out = []
     for sentence in _split_sentences(reply):
         local = _from_table(sentence, lang)
+        if local is None and lang in settings.llm_translate_languages:
+            local = _llm_from_english(sentence, lang)
         if local is None:
-            local = _llm_from_english(sentence, lang) or sentence
+            # No hand-written version and the LLM is not trusted for this language
+            # (qwen 7B writes broken Kannada): say it in clear English instead.
+            local = sentence
         out.append(local)
     return " ".join(out)
 
 
 def stt_language_name(code: Optional[str]) -> str:
-    return {"hi-IN": "Hindi", "en-IN": "English"}.get(code or "", code or "unknown")
+    return {"hi-IN": "Hindi", "en-IN": "English", "kn-IN": "Kannada"}.get(code or "", code or "unknown")
 
 
 def supported_languages() -> list:

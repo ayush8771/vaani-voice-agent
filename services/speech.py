@@ -23,8 +23,9 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # Our reply languages -> Timbre language codes and Edge-TTS fallback voices
-TIMBRE_LANGUAGE = {"en": "en-IN", "hi": "hi-IN", "hinglish": "hi-en"}
-EDGE_VOICE = {"en": "en-IN-PrabhatNeural", "hi": "hi-IN-MadhurNeural", "hinglish": "en-IN-PrabhatNeural"}
+TIMBRE_LANGUAGE = {"en": "en-IN", "hi": "hi-IN", "hinglish": "hi-en", "kn": "kn-IN"}
+EDGE_VOICE = {"en": "en-IN-PrabhatNeural", "hi": "hi-IN-MadhurNeural", "hinglish": "en-IN-PrabhatNeural",
+              "kn": "kn-IN-GaganNeural"}
 
 
 @dataclass

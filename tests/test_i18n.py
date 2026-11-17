@@ -155,7 +155,7 @@ def test_prisma_request_and_response(monkeypatch):
     url, kw = calls[0]
     assert url == "https://api.vachana.ai/stt/v3"
     assert kw["headers"] == {"X-API-Key-ID": "test-key"}
-    assert kw["data"] == {"language_code": "hi-IN,en-IN", "model": "prisma-v3.0", "format": "transcribe"}
+    assert kw["data"] == {"language_code": "hi-IN,en-IN,kn-IN", "model": "prisma-v3.0", "format": "transcribe"}
     assert "audio_file" in kw["files"]
 
 
@@ -290,3 +290,67 @@ def test_digits_alone_never_switch_language():
 def test_hindi_full_stop_not_part_of_name():
     import slot_rules
     assert slot_rules.parse_name("आशा।", asked=True) == "आशा"
+
+
+# ── Kannada ───────────────────────────────────────────────────────────────────
+def test_every_sentence_has_kannada_with_same_placeholders():
+    import re
+    import i18n_kn
+    missing = [en for en in i18n.SENTENCES if en not in i18n_kn.SENTENCES]
+    assert not missing, missing
+    for en, kn_text in i18n_kn.SENTENCES.items():
+        assert set(re.findall(r"\{(\w+)\}", kn_text)) == set(re.findall(r"\{(\w+)\}", en)), en
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("ನಾಳೆ ರಾತ್ರಿ 8 ಗಂಟೆಗೆ ನಾಲ್ಕು ಜನರಿಗೆ ಟೇಬಲ್ ಬುಕ್ ಮಾಡಬೇಕು",
+     {"date": TOMORROW, "time": "20:00", "people": 4}),
+    ("ನಾಡಿದ್ದು ಸಂಜೆ ಏಳುವರೆಗೆ ಇಬ್ಬರಿಗೆ ಟೇಬಲ್ ಬೇಕು", {"date": "2026-11-20", "time": "19:30", "people": 2}),
+    ("ಶನಿವಾರ ಮಧ್ಯಾಹ್ನ ಒಂದು ಗಂಟೆಗೆ ಮೂವರು", {"date": "2026-11-21", "time": "13:00", "people": 3}),
+    ("೯೮೭೬೫೪೩೨೧೦", {"phone": "9876543210"}),
+])
+def test_kannada_booking_words(text, expected):
+    import slot_rules
+    from datetime import date
+    found = slot_rules.parse_all(i18n.normalise(text), date(2026, 11, 18))
+    assert {k: found[k] for k in expected} == expected
+
+
+def test_kannada_detection_and_localisation():
+    assert i18n.detect("ನಾಳೆ ಟೇಬಲ್ ಬೇಕು", "kn-IN") == "kn"
+    out = i18n.localise("Just to confirm: a table for 4 on Thursday 19 November at 8 PM, under the name ರವಿ, "
+                        "mobile ending 3 2 1 0. Shall I book it?", "kn")
+    assert "ಗುರುವಾರ, 19 ನವೆಂಬರ್" in out and "ರಾತ್ರಿ 8 ಗಂಟೆಗೆ" in out and out.endswith("ಬುಕ್ ಮಾಡಲೇ?")
+    hours = i18n.localise("On Thursday 19 November we are open 10 AM to 10 PM.", "kn")
+    assert "ಬೆಳಿಗ್ಗೆ 10 ಗಂಟೆಯಿಂದ ರಾತ್ರಿ 10 ಗಂಟೆಯವರೆಗೆ" in hours
+
+
+def test_full_booking_in_kannada(fake_llm):
+    reply, state = say("ನಾಳೆ ರಾತ್ರಿ 8 ಗಂಟೆಗೆ ನಾಲ್ಕು ಜನರಿಗೆ ಟೇಬಲ್ ಬುಕ್ ಮಾಡಬೇಕು", {}, "kn-IN")
+    assert state["lang"] == "kn" and reply == "ಬುಕಿಂಗ್ ಯಾರ ಹೆಸರಿನಲ್ಲಿ ಮಾಡಲಿ?"
+    reply, state = say("ನನ್ನ ಹೆಸರು ರವಿ", state, "kn-IN")
+    reply, state = say("9876543210", state)
+    assert reply.startswith("ಒಮ್ಮೆ ಖಚಿತಪಡಿಸುತ್ತೇನೆ") and "ರವಿ" in reply
+    reply, state = say("ಹೌದು", state, "kn-IN")
+    assert "ಖಚಿತವಾಗಿದೆ" in reply
+    assert bookings() == [(TOMORROW, "20:00", 4, "ರವಿ")]
+
+
+def test_translation_in_wrong_script_is_retried_then_english(fake_chat, monkeypatch):
+    """Eval failure kn-07: a Kannada translation came back in Hindi."""
+    from config import settings
+    monkeypatch.setattr(settings, "llm_translate_languages", ("hi", "hinglish", "kn"))
+    i18n._llm_from_english.cache_clear()
+    fake_chat.script = ["पनीर टिक्का Rs 320 का है।", "ಪನೀರ್ ಟಿಕ್ಕಾ ಬೆಲೆ Rs 320."]
+    assert i18n.localise("Paneer tikka costs Rs 320.", "kn") == "ಪನೀರ್ ಟಿಕ್ಕಾ ಬೆಲೆ Rs 320."
+    i18n._llm_from_english.cache_clear()
+    fake_chat.script = ["पनीर टिक्का Rs 320 का है।", "पनीर टिक्का Rs 320 का है।"]
+    assert i18n.localise("Paneer tikka costs Rs 320.", "kn") == "Paneer tikka costs Rs 320."
+
+
+def test_kannada_free_text_stays_english_unless_enabled(fake_chat):
+    """qwen 7B writes broken Kannada, so free-form Kannada is off by default."""
+    i18n._llm_from_english.cache_clear()
+    fake_chat.script = ["ಮೇಖೌbred ಸಟ್ಡಿಯೋ"]
+    assert i18n.localise("Parking is at Mehboob Studio.", "kn") == "Parking is at Mehboob Studio."
+    assert i18n.localise("Shall I book it?", "kn") == "ಬುಕ್ ಮಾಡಲೇ?"      # hand-written still used

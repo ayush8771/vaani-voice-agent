@@ -25,7 +25,7 @@ let currentAudio = null;
 let ignoreInputUntil = 0;
 const ECHO_GUARD_MS = 700;
 
-const LANG_LABEL = { en: "English", hi: "हिंदी", hinglish: "Hinglish" };
+const LANG_LABEL = { en: "English", hi: "हिंदी", hinglish: "Hinglish", kn: "ಕನ್ನಡ" };
 
 // ---------- UI ----------
 function setStatus(state) {

@@ -11,6 +11,7 @@ Gnani allows one active request per account, so a 429 is retried once.
 import asyncio
 import base64
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -50,6 +51,23 @@ def _post_with_retry(url: str, **kwargs) -> requests.Response:
 
 
 # ── SPEECH-TO-TEXT (Gnani Prisma) ─────────────────────────────────────────────
+# Prisma's number formatting (format=transcribe) sometimes turns a party size
+# into a clock time: "a table for four" -> "a table for 4:00 am". Nobody books
+# at 4 AM, so "for/of/table N:00 am" is read back as N people.
+_PARTY_AS_TIME = re.compile(r"\b(for|of|table for)\s+(\d{1,2}):00\s*a\.?m\.?(?=\W|$)", re.I)
+
+
+# Digits spoken one by one come back separated: "9, 8, 7, 6, 5, 4, 3, 2, 1, 0।"
+_SPACED_DIGITS = re.compile(r"\d(?:[,.\s-]+\d){5,}")
+
+
+def clean_transcript(text: str) -> str:
+    out = _PARTY_AS_TIME.sub(lambda m: f"{m.group(1)} {m.group(2)}", (text or "").strip())
+    out = _SPACED_DIGITS.sub(lambda m: re.sub(r"\D", "", m.group(0)), out)
+    return re.sub(r"[\s।॥.!,]+$", "", out)        # trailing full stops (। is the Hindi one)
+
+
+
 def transcribe(audio: bytes, filename: str = "speech.wav", mime: str = "audio/wav") -> Transcript:
     if not settings.gnani_stt_enabled:
         return Transcript("", ok=False, error="Speech-to-text is not configured")
@@ -70,7 +88,7 @@ def transcribe(audio: bytes, filename: str = "speech.wav", mime: str = "audio/wa
             logger.error("Prisma STT failed (%s): %s", r.status_code, error)
             return Transcript("", ok=False, error=str(error), latency=time.time() - started)
         return Transcript(
-            text=(body.get("transcript") or "").strip(),
+            text=clean_transcript(body.get("transcript") or ""),
             language=body.get("detected_language_code"),
             latency=time.time() - started,
         )

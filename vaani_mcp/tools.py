@@ -111,7 +111,7 @@ def _norm_people(value) -> Optional[int]:
 def _norm_name(value) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    name = re.sub(r"[^\wऀ-ॿ\s.'-]", "", value).strip()   # keep Hindi vowel signs (रवि)
+    name = re.sub(r"[^\wऀ-ॣ०-ॿ\s.'-]", "", value).strip()   # keep Hindi vowel signs (रवि)
     return name if 2 <= len(name) <= 60 else None
 
 

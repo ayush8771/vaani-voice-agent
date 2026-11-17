@@ -155,7 +155,7 @@ def test_prisma_request_and_response(monkeypatch):
     url, kw = calls[0]
     assert url == "https://api.vachana.ai/stt/v3"
     assert kw["headers"] == {"X-API-Key-ID": "test-key"}
-    assert kw["data"] == {"language_code": "indic-auto", "model": "prisma-v3.0"}
+    assert kw["data"] == {"language_code": "hi-IN,en-IN", "model": "prisma-v3.0", "format": "transcribe"}
     assert "audio_file" in kw["files"]
 
 
@@ -258,3 +258,35 @@ def test_translation_that_drops_yes_is_rejected(fake_chat):
     i18n._llm_to_english.cache_clear()
     fake_chat.script = ["book please"]
     assert i18n.to_english("हां, बुक कर दो", "hi").startswith("yes")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Your table for 4:00 am on Thursday 19 November at 8 pm", "Your table for 4 on Thursday 19 November at 8 pm"),
+    ("a party of 6:00 am tomorrow", "a party of 6 tomorrow"),
+    ("book for 7:30 pm", "book for 7:30 pm"),
+    ("we open at 10:00 am", "we open at 10:00 am"),
+])
+def test_prisma_party_size_read_as_time_is_fixed(raw, expected):
+    """Live finding: Prisma's number formatting turned 'a table for four' into 'for 4:00 am'."""
+    assert speech.clean_transcript(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("9, 8, 7, 6, 5, 4, 3, 2, 1, 0।", "9876543210"),
+    ("मेरा नाम रवि है।", "मेरा नाम रवि है"),
+    ("Yes.", "Yes"),
+    ("कल 8 बजे, 4 लोग", "कल 8 बजे, 4 लोग"),
+])
+def test_clean_transcript_digits_and_full_stops(raw, expected):
+    """Live finding: spoken digits arrive comma-separated; '।' ended up inside names."""
+    assert speech.clean_transcript(raw) == expected
+
+
+def test_digits_alone_never_switch_language():
+    state = {"lang": "hi"}
+    assert i18n.update_language(state, "9 8 7 6 5 4 3 2 1 0", None) == "hi"
+
+
+def test_hindi_full_stop_not_part_of_name():
+    import slot_rules
+    assert slot_rules.parse_name("आशा।", asked=True) == "आशा"

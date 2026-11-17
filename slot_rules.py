@@ -171,7 +171,7 @@ _NOT_NAMES = {"yes", "no", "yeah", "nope", "sure", "okay", "ok", "fine", "book",
 
 def _clean_name(raw: str) -> Optional[str]:
     name = _FILLERS.sub(" ", raw or "")
-    name = re.sub(r"[^\wऀ-ॿ .'-]|[\d_]", " ", name)   # Latin or Devanagari (Ravi, रवि)
+    name = re.sub(r"[^\wऀ-ॣ०-ॿ .'-]|[\d_]", " ", name)   # Latin or Devanagari (Ravi, रवि)
     name = " ".join(w for w in name.split() if w.lower() not in ("is", "the", "name"))
     words = name.split()
     if not words or len(words) > 4 or words[0].lower() in _NOT_NAMES:
@@ -184,7 +184,7 @@ def parse_name(text: str, asked: bool = False) -> Optional[str]:
     t = _FILLERS.sub(" ", text or "")
     m = re.search(
         r"\b(?:my name is|my name's|name is|name's|under the name(?: of)?|under|"
-        r"call me|this is|i am|i'm|mera naam)\s+((?:[^\W\d_]|[ऀ-ॿ])[\wऀ-ॿ .'-]{0,40}?)"
+        r"call me|this is|i am|i'm|mera naam)\s+((?:[^\W\d_]|[ऀ-ॣ०-ॿ])[\wऀ-ॣ०-ॿ .'-]{0,40}?)"
         + _NAME_STOP, t, re.I)
     if m:
         return _clean_name(m.group(1))

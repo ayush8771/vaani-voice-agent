@@ -235,7 +235,7 @@ def _normalize_slots(slots: dict) -> dict:
     raw_name = slots.get("name")
     cleaned["name"] = None
     if isinstance(raw_name, str):
-        name = re.sub(r"[^\wऀ-ॿ\s.'-]", "", raw_name).strip()
+        name = re.sub(r"[^\wऀ-ॣ०-ॿ\s.'-]", "", raw_name).strip()
         cleaned["name"] = name if 2 <= len(name) <= 60 else None
 
     cleaned["phone"] = _normalize_phone(slots.get("phone"))

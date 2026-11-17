@@ -58,7 +58,7 @@ def update_language(state: dict, text: str, stt_code: Optional[str] = None) -> s
         state["lang"] = current or "en"
     elif current is None:
         state["lang"] = guess
-    elif guess != current and len((text or "").split()) >= 3:
+    elif guess != current and len([w for w in (text or "").split() if _LETTER.search(w)]) >= 3:
         logger.info("Language switched %s -> %s", current, guess)
         state["lang"] = guess
     return state["lang"]

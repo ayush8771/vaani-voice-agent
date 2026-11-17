@@ -47,6 +47,13 @@ def _bootstrap_rag() -> None:
         logger.warning("RAG index not built (is Ollama running?): %s", exc)
 
 
+def _warm_up_llm() -> None:
+    """Load the LLM in the background so the first caller does not hit a cold start."""
+    import threading
+    from brain import warm_up_llm
+    threading.Thread(target=warm_up_llm, daemon=True).start()
+
+
 def create_app() -> Flask:
     if len(settings.flask_secret_key) < 32:
         raise RuntimeError(
@@ -341,6 +348,7 @@ def _register_routes(app: Flask) -> None:
 
 if __name__ == "__main__":
     _bootstrap_rag()
+    _warm_up_llm()
     application = create_app()
     application.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
                     host="127.0.0.1", port=int(os.getenv("PORT", 5000)))

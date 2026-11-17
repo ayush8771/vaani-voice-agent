@@ -28,6 +28,7 @@ from edge_tts import Communicate
 
 import availability as av
 import bookings
+import slot_rules
 from config import settings
 from database import connection
 from rag_store import retrieve_hits
@@ -38,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 LLM_OPTIONS = {"temperature": 0, "num_predict": 80, "repeat_penalty": 1.0, "top_k": 1}
-_LLM_TIMEOUT_SECS = 15
+_LLM_TIMEOUT_SECS = 30   # a cold model can take ~20 s to load on CPU
+_LLM_KEEP_ALIVE = "30m"   # keep the model in memory between calls
 _LLM_RETRIES = 2
 
 
@@ -132,6 +134,7 @@ _BYE_KW = re.compile(r"\b(bye|goodbye|thank you|thanks|see you|thats all|that's 
 _BYE_ONLY = re.compile(
     r"^\s*(ok(ay)?[\s,]*)?(bye|goodbye|bye bye|that'?s all|nothing else|exit|never ?mind|"
     r"forget it)[\s.!]*$", re.I)
+_NEW_BOOKING = re.compile(r"\b(new|another|different|fresh)\s+(booking|reservation|table)\b", re.I)
 _EXISTING_BOOKING = re.compile(r"\b(my|existing|old|previous)\s+(booking|reservation|table)\b", re.I)
 _RESET_KW = re.compile(r"\b(reset|start over|new request|new query|forget previous|restart)\b", re.I)
 _QUESTION = re.compile(r"\?\s*$|^\s*(what|when|where|which|how|do you|does|is there|are there|can i get)\b", re.I)
@@ -195,7 +198,12 @@ def _say(text: str, state: dict):
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-def llm(prompt: str, system: str = None, max_tokens: int = 250) -> str:
+LLM_FALLBACK = "Sorry, I did not catch that. Could you please repeat?"
+
+
+def llm(prompt: str, system: str = None, max_tokens: int = 250,
+        on_fail: Optional[str] = LLM_FALLBACK) -> Optional[str]:
+    """Call Ollama. On failure returns `on_fail` (None for callers that parse the output)."""
     opts = dict(LLM_OPTIONS, num_predict=max_tokens)
     last_err = "Unknown error"
     for attempt in range(1, _LLM_RETRIES + 1):
@@ -203,7 +211,8 @@ def llm(prompt: str, system: str = None, max_tokens: int = 250) -> str:
             r = requests.post(
                 settings.ollama_url,
                 json={"model": settings.ollama_model, "system": system or get_persona(),
-                      "prompt": prompt, "stream": False, "options": opts},
+                      "prompt": prompt, "stream": False, "options": opts,
+                      "keep_alive": _LLM_KEEP_ALIVE},
                 timeout=_LLM_TIMEOUT_SECS,
             )
             r.raise_for_status()
@@ -218,11 +227,20 @@ def llm(prompt: str, system: str = None, max_tokens: int = 250) -> str:
             last_err = str(exc)
             logger.error("LLM error (attempt %d/%d): %s", attempt, _LLM_RETRIES, exc)
     logger.error("LLM failed after %d attempts: %s", _LLM_RETRIES, last_err)
-    return "Sorry, I did not catch that. Could you please repeat?"
+    return on_fail
+
+
+def warm_up_llm() -> None:
+    """Load the model into memory so the first caller does not wait."""
+    try:
+        llm("Hi", system="Reply with OK.", max_tokens=2, on_fail=None)
+        logger.info("LLM warmed up (%s)", settings.ollama_model)
+    except Exception as exc:
+        logger.warning("LLM warm-up failed: %s", exc)
 
 
 def classify_intent(msg: str) -> str:
-    result = llm(msg, system=INTENT_SYSTEM, max_tokens=5).lower().strip()
+    result = (llm(msg, system=INTENT_SYSTEM, max_tokens=5, on_fail="") or "").lower().strip()
     for intent in ("book", "cancel", "faq", "menu", "hours", "greeting", "goodbye"):
         if intent in result:
             return intent
@@ -256,26 +274,8 @@ def _clean_json(raw: str) -> dict:
         return {}
 
 
-def _normalize_phone(raw) -> Optional[str]:
-    """Indian mobile: 10 digits starting 6-9, with optional +91 / 0 prefix."""
-    if raw is None:
-        return None
-    digits = re.sub(r"\D", "", str(raw))
-    if len(digits) == 12 and digits.startswith("91"):
-        digits = digits[2:]
-    elif len(digits) == 11 and digits.startswith("0"):
-        digits = digits[1:]
-    return digits if re.fullmatch(r"[6-9]\d{9}", digits) else None
-
-
-def _phone_from_text(msg: str) -> Optional[str]:
-    """Find a phone number in free text, ignoring dates and times."""
-    text = re.sub(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}:\d{2}", " ", msg or "")
-    for candidate in re.findall(r"\+?\d[\d\s-]{8,}\d", text):
-        phone = _normalize_phone(candidate)
-        if phone:
-            return phone
-    return None
+_normalize_phone = slot_rules.normalize_phone
+_phone_from_text = slot_rules.parse_phone
 
 
 def _normalize_slots(slots: dict) -> dict:
@@ -313,11 +313,24 @@ def _normalize_slots(slots: dict) -> dict:
     return cleaned
 
 
-def extract_slots(msg: str) -> dict:
-    raw = llm(msg, system=_slot_system(), max_tokens=120)
-    slots = _normalize_slots(_clean_json(raw))
-    if not slots.get("phone"):
-        slots["phone"] = _phone_from_text(msg)
+def extract_slots(msg: str, asked: Optional[str] = None) -> dict:
+    """
+    Rules first; the LLM is asked only when the caller mentions a detail the
+    rules could not read. If the LLM fails, the rule results are used alone.
+    """
+    slots = _normalize_slots(slot_rules.parse_all(msg, av.today(), asked))
+    unread = [k for k in ("date", "time", "people", "name")
+              if slots.get(k) is None and (k == asked or _EVIDENCE[k].search(msg or ""))]
+    if not unread:
+        return slots
+
+    raw = llm(msg, system=_slot_system(), max_tokens=120, on_fail=None)
+    if raw is None:
+        logger.warning("Slot LLM unavailable; using rule-based slots only")
+        return slots
+    from_llm = _normalize_slots(_clean_json(raw))
+    for k in unread:
+        slots[k] = from_llm.get(k)
     return slots
 
 
@@ -536,7 +549,7 @@ def _booking_turn(msg: str, state: dict):
             state.pop("asked", None)
             return _say("No problem. What would you like to change?", state)
 
-    slots, changed = apply_slots(slots, extract_slots(msg), msg, state.get("asked"))
+    slots, changed = apply_slots(slots, extract_slots(msg, state.get("asked")), msg, state.get("asked"))
     state["slots"] = slots
 
     if state.get("stage") == "confirm" and not changed:
@@ -634,7 +647,7 @@ def _cancel_turn(msg: str, state: dict):
     if state.get("stage") == "otp":
         return _cancel_otp_turn(msg, state)
 
-    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg), msg, state.get("asked"))
+    slots, _ = apply_slots(state.get("slots", {}), extract_slots(msg, state.get("asked")), msg, state.get("asked"))
     slots = {k: slots.get(k) for k in CANCEL_SLOTS}
     state["slots"] = slots
 
@@ -722,6 +735,9 @@ def get_ai_response(message: str, state: dict):
             return _say(f"Okay. Thank you for calling {settings.restaurant_name}. Goodbye!", state)
 
         intent = _fast_intent(msg)
+        if flow == "booking" and _NEW_BOOKING.search(msg):
+            _start_booking(state)
+            return _booking_turn(msg, state)
         if flow == "booking" and intent == "cancel":
             if not _EXISTING_BOOKING.search(msg):
                 state.clear()
@@ -752,8 +768,9 @@ def get_ai_response(message: str, state: dict):
         return _cancel_turn(msg, state)
 
     if intent == "greeting":
-        return _say(llm(f"Customer said: {msg}\nGreet warmly as VAANI. One sentence.", max_tokens=60),
-                    state)
+        greeting = llm(f"Customer said: {msg}\nGreet warmly as VAANI. One sentence.", max_tokens=60,
+                       on_fail=None)
+        return _say(greeting or "Hello! How can I help you today?", state)
 
     if intent == "goodbye":
         state.clear()

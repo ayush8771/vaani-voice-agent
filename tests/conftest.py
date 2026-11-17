@@ -80,8 +80,13 @@ class FakeLLM:
 
     def __init__(self):
         self.slots = {}
+        self.down = False      # simulate Ollama timing out
+        self.calls = 0
 
-    def __call__(self, prompt, system=None, max_tokens=250):
+    def __call__(self, prompt, system=None, max_tokens=250, on_fail=brain.LLM_FALLBACK):
+        self.calls += 1
+        if self.down:
+            return on_fail
         if system and system.startswith("Extract booking details"):
             return json.dumps(self.slots.get(prompt, {}))
         if system and system.startswith("Classify"):

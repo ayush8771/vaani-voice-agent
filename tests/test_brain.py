@@ -50,6 +50,25 @@ def test_invented_date_is_ignored_when_only_time_changes(fake_llm):
     assert state["slots"]["date"] == TOMORROW and state["slots"]["time"] == "21:00"
 
 
+def test_booking_works_while_llm_is_down(fake_llm):
+    """Live-test bug: the LLM timed out, so 'tomorrow' and '18th November' were never read."""
+    fake_llm.down = True
+    reply, state = say("I wanted to book a table for 4 to for tomorrow at 8:00 PM", {})
+    assert state["slots"]["date"] == TOMORROW and state["slots"]["time"] == "20:00"
+    assert state["slots"]["people"] == 4 and reply == brain.BOOKING_Q["name"]
+
+    reply, state = say("Ravi", state)
+    reply, state = say("9876543210", state)
+    assert "Just to confirm" in reply
+    reply, state = say("yes", state)
+    assert "is confirmed" in reply
+
+
+def test_simple_sentences_skip_the_llm(fake_llm):
+    say("Book a table for 4 tomorrow at 8 pm, my name is Ravi, 9876543210", {})
+    assert fake_llm.calls == 0
+
+
 def test_hours_checked_before_asking_name(fake_llm):
     """Transcript bug: 8 AM was only rejected after name and phone were collected."""
     fake_llm.slots["Book a table for tomorrow for 4 at 8 am"] = {"date": TOMORROW, "time": "08:00", "people": 4}
@@ -83,6 +102,13 @@ def test_thanks_with_new_booking_starts_booking(fake_llm):
     fake_llm.slots[msg] = {"name": "Ravi"}
     reply, state = say(msg, {})
     assert state.get("flow") == "booking" and "Goodbye" not in reply
+
+
+def test_new_booking_mid_flow_starts_over(fake_llm):
+    _, state = say("I wanted to book a table for 4 tomorrow at 8 pm", {})
+    reply, state = say("Actually, my name is Ravi and I want to make a new booking", state)
+    assert state["slots"] == {"name": "Ravi"} or state["slots"].get("date") is None
+    assert reply == brain.BOOKING_Q["date"]
 
 
 def test_plain_thanks_still_says_goodbye():

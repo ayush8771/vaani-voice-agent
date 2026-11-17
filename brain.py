@@ -118,7 +118,7 @@ _EXISTING_BOOKING = re.compile(r"\b(my|existing|old|previous)\s+(booking|reserva
 _RESET_KW = re.compile(r"\b(reset|start over|new request|new query|forget previous|restart)\b", re.I)
 _NEEDS_AGENT = re.compile(
     r"\b(complain|complaint|manager|supervisor|owner|speak to|talk to|human|real person|staff|"
-    r"refund|allerg\w*|special request|birthday|anniversary|surprise)\b", re.I)
+    r"refund|special request|cake|decorat\w*|surprise|birthday|anniversary)\b", re.I)
 _QUESTION = re.compile(r"\?\s*$|^\s*(what|when|where|which|how|do you|does|is there|are there|can i get)\b", re.I)
 _YES = re.compile(r"\b(yes|yeah|yep|yup|sure|correct|right|confirm|go ahead|book it|"
                   r"haan|ha|ji|theek hai|thik hai|ok|okay)\b", re.I)
@@ -758,11 +758,12 @@ def _info_clause(msg: str) -> Optional[str]:
     return None
 
 
-def _agent_turn(msg: str, state: dict):
-    """Hand the turn to the tool-calling agent; fall back to the knowledge base if the LLM is down."""
+def _agent_turn(msg: str, state: dict, specialist: str = "general"):
+    """Hand the turn to a specialist agent; fall back to the knowledge base if the LLM is down."""
     if settings.agent_enabled:
         import agent  # lazy: agent imports this module's tools indirectly
-        reply = agent.run(msg, state, info_question=_info_clause(msg))
+        info = _info_clause(msg) if _is_multi_intent(msg) else None
+        reply = agent.run(msg, state, info_question=info, specialist=specialist)
         if reply:
             return _say(reply, state)
     return _say(_answer_info("other", msg), state)
@@ -797,13 +798,13 @@ def _route(msg: str, state: dict):
         return _booking_turn(msg, state) if flow == "booking" else _cancel_turn(msg, state)
 
     if _is_multi_intent(msg) or (_is_availability_question(msg) and settings.agent_enabled):
-        return _agent_turn(msg, state)   # agent checks tables (and answers the other part)
+        return _agent_turn(msg, state, "reservation")   # tables (+ concierge in parallel)
 
     intent = _fast_intent(msg)
     if _EXISTING_BOOKING.search(msg) and intent != "cancel" and not _NEW_BOOKING.search(msg):
-        return _agent_turn(msg, state)   # "is my booking still on?", "change my reservation"
+        return _agent_turn(msg, state, "reservation")   # "is my booking still on?"
     if _NEEDS_AGENT.search(msg) and intent not in ("book", "cancel"):
-        return _agent_turn(msg, state)   # complaints, managers, special requests
+        return _agent_turn(msg, state, "care")          # complaints, managers, special requests
 
     if intent == "goodbye" and not _BYE_ONLY.match(msg) and len(msg.split()) > 4:
         intent = None  # "thanks, and ..." carries a real request

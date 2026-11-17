@@ -35,7 +35,7 @@ def test_multi_intent_uses_two_tools(fake_chat):
     assert reply.endswith("Would you like me to book it?")
     assert len(fake_chat.seen) == 1                    # one LLM call: tool words are spoken directly
     calls = rows("SELECT tool, path FROM tool_calls ORDER BY id")
-    assert ("check_availability", "agent") in calls and ("query_menu_faq", "agent") in calls
+    assert ("check_availability", "agent:reservation") in calls and ("query_menu_faq", "agent:concierge") in calls
 
     # Saying yes continues the booking with the details already known.
     reply, state = say("yes please", state)
@@ -54,7 +54,7 @@ def test_agent_prepares_booking_and_caller_yes_commits(fake_chat):
     assert "is confirmed" in reply
     assert rows("SELECT date, time, people, name FROM bookings") == [(TOMORROW, "20:00", 4, "Ravi")]
     paths = [r[0] for r in rows("SELECT path FROM tool_calls WHERE tool IN ('prepare_booking','book_table') ORDER BY id")]
-    assert paths == ["agent", "rules"]   # agent prepared it, the caller's yes committed it
+    assert paths == ["agent:general", "rules"]   # agent prepared it, the caller's yes committed it
 
 
 def test_agent_cannot_book_by_itself(fake_chat):
@@ -63,7 +63,7 @@ def test_agent_cannot_book_by_itself(fake_chat):
     say("just sort it all out for me right now", {})
     assert rows("SELECT COUNT(*) FROM bookings")[0][0] == 0
     tool_msgs = [m for m in fake_chat.seen[-1] if m["role"] == "tool"]
-    assert "not available" in tool_msgs[0]["content"]
+    assert "not your job" in tool_msgs[0]["content"]
 
 
 def test_agent_missing_details_hands_off_to_questions(fake_chat):
@@ -160,7 +160,7 @@ def test_live_sentence_reaches_agent_and_answers_both_parts(fake_chat):
     reply, state = say(msg, {})
     assert "we have a table on Thursday 19 November at 8 PM" in reply
     assert reply.endswith("Would you like me to book it?")
-    assert rows("SELECT path FROM tool_calls WHERE tool='check_availability'") == [("agent",)]
+    assert rows("SELECT path FROM tool_calls WHERE tool='check_availability'") == [("agent:reservation",)]
 
 
 def test_info_part_is_answered_even_if_model_skips_it(fake_chat):
@@ -176,3 +176,31 @@ def test_info_clause_extraction():
     assert brain._info_clause("Is there a table for 4 tomorrow and do you have parking") == "do you have parking"
     assert brain._info_clause("table for 2 at 8? Also what's the price of biryani") == "what's the price of biryani"
     assert brain._info_clause("Is there a table for 4 tomorrow") is None
+
+
+# ── Specialists ───────────────────────────────────────────────────────────────
+def test_complaint_goes_to_care_specialist(fake_chat):
+    fake_chat.script = [[("escalate_to_human", {"reason": "cold food"})]]
+    say("I want to complain, the food was cold", {})
+    assert rows("SELECT tool, path FROM tool_calls") == [("escalate_to_human", "agent:care")]
+    offered = [t for t in fake_chat.seen[0] if t["role"] == "system"][0]["content"]
+    assert "guest care" in offered
+
+
+def test_care_specialist_cannot_book(fake_chat):
+    fake_chat.script = [[("prepare_booking", {"date": TOMORROW, "time": "20:00", "party_size": 2,
+                                              "name": "Asha", "phone": "9876543210"})],
+                        "I have noted your request."]
+    reply, state = say("Get me the manager, and sort out dinner for us tomorrow", {})
+    assert rows("SELECT COUNT(*) FROM tool_calls WHERE tool='prepare_booking'")[0][0] == 0
+    assert "flow" not in state
+
+
+def test_concierge_answers_in_parallel_without_an_llm_call(fake_chat):
+    msg = "Is there a table for 2 tomorrow at 7 pm, and what is the price of paneer tikka?"
+    fake_chat.script = [[("check_availability", {"date": TOMORROW, "time": "19:00", "party_size": 2})]]
+    reply, _ = say(msg, {})
+    assert len(fake_chat.seen) == 1                      # only the reservation specialist used the LLM
+    paths = dict(rows("SELECT tool, path FROM tool_calls"))
+    assert paths == {"check_availability": "agent:reservation", "query_menu_faq": "agent:concierge"}
+    assert reply.endswith("Would you like me to book it?")

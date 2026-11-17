@@ -177,8 +177,12 @@ def _apply_handoff(name: str, result: dict, state: dict) -> Optional[str]:
 
 
 # ── AGENT LOOP ────────────────────────────────────────────────────────────────
-def run(msg: str, state: dict) -> Optional[str]:
-    """Answer one caller turn with tools. Returns the reply, or None if the LLM is unavailable."""
+def run(msg: str, state: dict, info_question: Optional[str] = None) -> Optional[str]:
+    """Answer one caller turn with tools. Returns the reply, or None if the LLM is unavailable.
+
+    info_question: a menu/FAQ question the router spotted in the caller's words. If the
+    model forgets to look it up, it is looked up here, so no part of the request is dropped.
+    """
     try:
         b = bridge()
     except Exception as exc:
@@ -198,6 +202,10 @@ def run(msg: str, state: dict) -> Optional[str]:
 
         messages.append({"role": "assistant", "content": out["content"], "tool_calls": out["tool_calls"]})
         spoken, handoff_say, retry = [], None, False
+        called = {c["name"] for c in out["tool_calls"]}
+        if info_question and "query_menu_faq" not in called and step == 0:
+            out["tool_calls"].append({"id": "router_info", "name": "query_menu_faq",
+                                      "arguments": {"query": info_question}})
         for call in out["tool_calls"]:
             name, args = call["name"], call["arguments"]
             if name not in AGENT_TOOLS:

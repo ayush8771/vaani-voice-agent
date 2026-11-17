@@ -124,3 +124,55 @@ def test_mcp_server_exposes_all_tools_and_guards_book_table():
             "confirm_cancellation", "query_menu_faq", "escalate_to_human"} <= names
     assert forged["reason"] == "invalid_hold" and unconfirmed["reason"] == "not_confirmed"
     assert ("book_table", "mcp-external") in rows("SELECT tool, path FROM tool_calls")
+
+
+# ── Router: which sentences go to the agent ──────────────────────────────────
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("msg", [
+    # Live-test sentences (speech, so no question mark)
+    "Is there a table available for 4 at 8:00 PM tomorrow and do you have parking",
+    "Is there a table available for 4 at 8:00 PM tomorrow? And is there parking available in your restaurant",
+    "any tables free tomorrow night for two",
+    "do you have a table for 6 on Friday",
+    "book a table for 2 tomorrow and do you take UPI",
+])
+def test_availability_and_multi_intent_go_to_agent(msg):
+    assert brain._is_multi_intent(msg) or brain._is_availability_question(msg)
+
+
+@pytest.mark.parametrize("msg", [
+    "Book a table for 4 tomorrow at 8 pm, my name is Ravi, 9876543210",
+    "I want to book a table",
+    "book for a party of 6 on Saturday",
+    "Do you have parking?",
+    "What's on the menu",
+])
+def test_plain_requests_stay_on_fast_path(msg):
+    assert not brain._is_multi_intent(msg) and not brain._is_availability_question(msg)
+
+
+def test_live_sentence_reaches_agent_and_answers_both_parts(fake_chat):
+    msg = "Is there a table available for 4 at 8:00 PM tomorrow and do you have parking"
+    fake_chat.script = [[("check_availability", {"date": TOMORROW, "time": "20:00", "party_size": 4}),
+                         ("query_menu_faq", {"query": "parking"})]]
+    reply, state = say(msg, {})
+    assert "we have a table on Thursday 19 November at 8 PM" in reply
+    assert reply.endswith("Would you like me to book it?")
+    assert rows("SELECT path FROM tool_calls WHERE tool='check_availability'") == [("agent",)]
+
+
+def test_info_part_is_answered_even_if_model_skips_it(fake_chat):
+    """Live test: qwen called only check_availability and dropped the parking question."""
+    msg = "Is there a table available for 4 at 8:00 PM tomorrow and do you have parking"
+    fake_chat.script = [[("check_availability", {"date": TOMORROW, "time": "20:00", "party_size": 4})]]
+    reply, _ = say(msg, {})
+    assert rows("SELECT args FROM tool_calls WHERE tool='query_menu_faq'") == [('{"query": "do you have parking"}',)]
+    assert "we have a table" in reply and phrases.unsure_reply() in reply
+
+
+def test_info_clause_extraction():
+    assert brain._info_clause("Is there a table for 4 tomorrow and do you have parking") == "do you have parking"
+    assert brain._info_clause("table for 2 at 8? Also what's the price of biryani") == "what's the price of biryani"
+    assert brain._info_clause("Is there a table for 4 tomorrow") is None

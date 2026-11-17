@@ -461,7 +461,15 @@ def _deterministic_hours_answer(msg: str) -> Optional[str]:
 
 
 def _answer_info(intent: str, msg: str) -> str:
-    """Menu, hours, FAQ and general questions."""
+    """Menu, hours, FAQ and general questions. A miss in one section retries across all sections."""
+    answer = _answer_in_section(intent, msg)
+    if answer == _unsure_reply() and intent in ("menu", "hours"):
+        # e.g. "is there a vegetarian menu" is answered in the FAQ section, not the MENU section
+        answer = _strict_rag_answer(msg, n=6, max_distance=0.55)
+    return answer
+
+
+def _answer_in_section(intent: str, msg: str) -> str:
     if intent == "menu":
         return _strict_rag_answer(msg, section_filter="MENU", n=10, max_distance=0.52,
                                   intent_hint="menu", signal_re=_MENU_SIGNAL_RE)
@@ -639,19 +647,44 @@ def _pending_prompt(state: dict) -> str:
 
 
 # ── ROUTER ────────────────────────────────────────────────────────────────────
+# "Is there a table for 4 tomorrow?", "any tables free at 8", "do you have a table" -
+# a question about availability, not yet a booking. Speech has no "?", so no punctuation needed.
+_AVAILABILITY_Q = re.compile(
+    r"\b(is there|are there|do you have|have you got|got|any)\b.{0,30}\b(table|tables|seat|seats|slot|space)\b"
+    r"|\b(table|tables|seat|seats|slot)\b.{0,20}\b(available|free|open|left)\b"
+    r"|\bavailab(le|ility)\b.{0,30}\b(table|tables|for \d+|tonight|tomorrow)\b", re.I)
+# Questions that are not about booking itself ("party"/"event" excluded: "a party of 6" is a booking).
+_INFO_Q = re.compile(
+    r"\b(parking|valet|menu|price|prices|cost|veg|vegetarian|vegan|wifi|wi-fi|payment|upi|card|cash|"
+    r"alcohol|dress code|wheelchair|pet|pets|delivery|address|location|where are you|hours|timings?|"
+    r"open|close|kids|children|allerg\w*)\b", re.I)
+
+
+def _is_availability_question(msg: str) -> bool:
+    return bool(_AVAILABILITY_Q.search(msg))
+
+
 def _is_multi_intent(msg: str) -> bool:
-    """A booking or cancel request that also asks something else -> the agent handles it."""
-    action = _BOOK_KW.search(msg) or _CANCEL_KW.search(msg)
-    question = (_MENU_KW.search(msg) or _FAQ_KW.search(msg) or _HOURS_KW.search(msg)) and (
-        _QUESTION.search(msg) or re.search(r"\b(and|also|plus)\b.*\?|\b(do you|is there|are there)\b", msg, re.I))
-    return bool(action and question)
+    """A booking, cancel or availability request that also asks something else."""
+    action = _BOOK_KW.search(msg) or _CANCEL_KW.search(msg) or _AVAILABILITY_Q.search(msg)
+    return bool(action and _INFO_Q.search(msg))
+
+
+def _info_clause(msg: str) -> Optional[str]:
+    """The part of a mixed request that is a menu/FAQ question, e.g. 'do you have parking'."""
+    if not _INFO_Q.search(msg):
+        return None
+    for clause in re.split(r"\?|[,.;]|\b(?:and|also|plus)\b", msg, flags=re.I):
+        if clause and _INFO_Q.search(clause) and not _AVAILABILITY_Q.search(clause):
+            return clause.strip()
+    return None
 
 
 def _agent_turn(msg: str, state: dict):
     """Hand the turn to the tool-calling agent; fall back to the knowledge base if the LLM is down."""
     if settings.agent_enabled:
         import agent  # lazy: agent imports this module's tools indirectly
-        reply = agent.run(msg, state)
+        reply = agent.run(msg, state, info_question=_info_clause(msg))
         if reply:
             return _say(reply, state)
     return _say(_answer_info("other", msg), state)
@@ -683,8 +716,8 @@ def _route(msg: str, state: dict):
 
         return _booking_turn(msg, state) if flow == "booking" else _cancel_turn(msg, state)
 
-    if _is_multi_intent(msg):
-        return _agent_turn(msg, state)
+    if _is_multi_intent(msg) or (_is_availability_question(msg) and settings.agent_enabled):
+        return _agent_turn(msg, state)   # agent checks tables (and answers the other part)
 
     intent = _fast_intent(msg)
     if _EXISTING_BOOKING.search(msg) and intent != "cancel" and not _NEW_BOOKING.search(msg):

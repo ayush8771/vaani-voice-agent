@@ -474,21 +474,23 @@ def _booking_turn(msg: str, state: dict):
     slots = state.get("slots", {})
 
     if state.get("stage") == "confirm":
-        short = len(msg.split()) <= 4
-        if _YES.search(msg) and not _NO.search(msg) and short:
+        plain_yes = (_YES.search(msg) and not _NO.search(msg) and len(msg.split()) <= 4
+                     and not re.search(r"\d", msg))
+        if plain_yes:
             return _finalise_booking(state)
-        if _NO.search(msg) and short:
-            state["stage"] = "collect"
-            state.pop("asked", None)
-            state.pop("hold_token", None)
-            return _say("No problem. What would you like to change?", state)
 
+    # Read any new details first: "no, make it 7 pm" is a correction, not just a "no".
     slots, changed = apply_slots(slots, extract_slots(msg, state.get("asked")), msg, state.get("asked"))
     state["slots"] = slots
 
     if state.get("stage") == "confirm" and not changed:
         if _YES.search(msg) and not _NO.search(msg):
             return _finalise_booking(state)
+        if _NO.search(msg):
+            state["stage"] = "collect"
+            state.pop("asked", None)
+            state.pop("hold_token", None)
+            return _say("No problem. What would you like to change?", state)
         return _say("Sorry, I did not catch that. Shall I book it, or would you like to change something?",
                     state)
 

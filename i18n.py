@@ -88,8 +88,9 @@ _PHRASES = [
     (r"सुबह|\bsubah\b", "morning"), (r"दोपहर|\bdopahar\b", "afternoon"),
     (r"लोगों|लोगो|लोग|व्यक्ति|मेहमान|\blogon\b|\blogo\b|\blog\b|\bvyakti\b|\bmehmaan\b", "people"),
     (r"के लिए|\bke liye\b|\bke liya\b", "for"),
-    (r"जी हाँ|जी हां|हाँ जी|हां जी|हाँ|हां|ठीक है|बिल्कुल|कर दो|कर दीजिए|\bhaan ji\b|\bji haan\b|\bhaan\b|"
-     r"\btheek hai\b|\bthik hai\b|\bbilkul\b|\bkar do\b|\bkar dijiye\b", "yes"),
+    # Not "kar do": "saat baje kar do" means "make it 7", not "yes".
+    (r"जी हाँ|जी हां|हाँ जी|हां जी|हाँ|हां|ठीक है|बिल्कुल|\bhaan ji\b|\bji haan\b|\bhaan\b|"
+     r"\btheek hai\b|\bthik hai\b|\bbilkul\b", "yes"),
     (r"नहीं|नही|\bnahi\b|\bnahin\b", "no"),
     (r"टेबल", "table"), (r"बुकिंग", "booking"), (r"बुक", "book"), (r"रिज़र्व|रिजर्व", "reserve"),
     (r"कैंसल|कैंसिल|रद्द", "cancel"), (r"पार्किंग", "parking"), (r"मेन्यू|मेनू", "menu"),
@@ -113,7 +114,9 @@ def normalise(text: str) -> str:
     for pattern, repl in _PHRASES:          # phrases first: "कर दो" is "yes", not "कर 2"
         out = pattern.sub(repl, out)
     for word, n in sorted(_HI_NUMBERS.items(), key=lambda kv: -len(kv[0])):
-        out = re.sub(rf"(?<![ऀ-ॿ]){word}(?![ऀ-ॿ])", str(n), out)
+        # "कर दो" / "दे दो" mean "do it" / "give", not "two"
+        guard = r"(?<!कर )(?<!दे )" if word == "दो" else ""
+        out = re.sub(rf"{guard}(?<![ऀ-ॿ]){word}(?![ऀ-ॿ])", str(n), out)
     out = re.sub(r"साढ़े\s*(\d{1,2})", r"\1:30", out)       # साढ़े सात -> 7:30 (after numbers)
     out = _ROMAN_NUM_CONTEXT.sub(lambda m: f"{_ROMAN_NUMBERS[m.group(1).lower()]} {m.group(2)}", out)
     out = re.sub(r"\s*[।|]\s*", ". ", out)
@@ -141,17 +144,35 @@ def _llm_to_english(text: str) -> Optional[str]:
     )
 
 
+def _facts(text: str) -> dict:
+    """Date, time and party size the rule reader finds in a sentence."""
+    import availability as av
+    import slot_rules
+    return {"date": slot_rules.parse_date(text, av.today()), "time": slot_rules.parse_time(text),
+            "people": slot_rules.parse_people(text),
+            # a "yes" or "no" matters as much as a date: "हां, बुक कर दो" must keep its yes
+            "yes": True if re.search(r"\byes\b", text, re.I) else None,
+            "no": True if re.search(r"\bno\b", text, re.I) else None}
+
+
 def to_english(text: str, lang: str, asked: Optional[str] = None) -> str:
     """What the English pipeline should see for this caller utterance."""
     if lang == "en":
         return text
     normalised = normalise(text)
-    if _needs_llm(normalised, lang, asked):
-        translated = _llm_to_english(text)
-        if translated:
-            logger.info("Translated input (%s): %r -> %r", lang, text[:60], translated[:60])
-            return translated
-    return normalised
+    if not _needs_llm(normalised, lang, asked):
+        return normalised
+    # The LLM gets the normalised text (dates and times already in English) and its
+    # translation is only used if it keeps every date, time and party size the rules found.
+    translated = _llm_to_english(normalised)
+    if not translated:
+        return normalised
+    known, got = _facts(normalised), _facts(translated)
+    if any(v is not None and got[k] != v for k, v in known.items()):
+        logger.info("Rejected translation that changed %s: %r", known, translated[:80])
+        return normalised
+    logger.info("Translated input (%s): %r -> %r", lang, normalised[:60], translated[:60])
+    return translated
 
 
 # ── 3. OUTPUT: LOCALISE THE REPLY ─────────────────────────────────────────────

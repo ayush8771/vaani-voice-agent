@@ -51,7 +51,7 @@ def test_unsupported_language_keeps_current():
 @pytest.mark.parametrize("text,expected", [
     ("कल रात 8 बजे 4 लोगों के लिए टेबल बुक करनी है", "tomorrow night 8 baje 4 people for table book करनी है"),
     ("मेरा नाम रवि है", "my name is रवि"),
-    ("हाँ, बुक कर दो", "yes, book yes"),
+    ("हाँ, बुक कर दो", "yes, book कर दो"),
     ("kal shaam saat baje do log", "tomorrow evening 7 baje 2 people"),
     ("साढ़े सात बजे", "7:30 baje"),
     ("९८७६५४३२१०", "9876543210"),
@@ -225,3 +225,36 @@ def test_voice_ignores_silence(client, monkeypatch):
     data = client.post("/voice", data={"audio": (io.BytesIO(b"\0" * 4000), "s.wav")},
                        content_type="multipart/form-data").get_json()
     assert data == {"transcript": "", "response": None}
+
+
+def test_translation_that_changes_a_date_is_rejected(fake_chat):
+    """Eval failure: the LLM turned 'kal' (tomorrow) into 'tonight'."""
+    i18n._llm_to_english.cache_clear()
+    fake_chat.script = ["I want a table for 4 people at 8 pm tonight"]
+    out = i18n.to_english("mujhe kal raat 8 baje 4 logon ke liye table chahiye", "hinglish")
+    assert "tomorrow" in out and "tonight" not in out
+
+
+def test_good_translation_is_used(fake_chat):
+    i18n._llm_to_english.cache_clear()
+    fake_chat.script = ["I need to book a table for 4 people tomorrow night at 8"]
+    out = i18n.to_english("कल रात 8 बजे 4 लोगों के लिए टेबल बुक करनी है", "hi")
+    assert out == "I need to book a table for 4 people tomorrow night at 8"
+
+
+def test_correction_with_no_in_hindi(fake_llm):
+    """Eval failure: 'नहीं, सात बजे कर दो' (no, make it 7) was treated as a plain no."""
+    _, state = say("कल रात 8 बजे 4 लोगों के लिए टेबल बुक करनी है", {}, "hi-IN")
+    _, state = say("मेरा नाम रवि है", state, "hi-IN")
+    reply, state = say("9876543210", state)
+    reply, state = say("नहीं, सात बजे कर दो", state, "hi-IN")
+    assert reply.startswith("एक बार कन्फर्म कर लूं") and "शाम 7 बजे" in reply
+    reply, state = say("हाँ", state, "hi-IN")
+    assert bookings() == [(TOMORROW, "19:00", 4, "रवि")]
+
+
+def test_translation_that_drops_yes_is_rejected(fake_chat):
+    """Eval failure hi-03: 'हां, बुक कर दो' was translated to 'book please'."""
+    i18n._llm_to_english.cache_clear()
+    fake_chat.script = ["book please"]
+    assert i18n.to_english("हां, बुक कर दो", "hi").startswith("yes")

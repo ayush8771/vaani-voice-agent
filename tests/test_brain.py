@@ -27,7 +27,7 @@ def test_read_back_before_booking(fake_llm):
 
     reply, state = say("yes", state)
     assert "is confirmed" in reply and "WhatsApp" in reply
-    assert booking_count() == 1 and state == {}
+    assert booking_count() == 1 and "flow" not in state
 
 
 def test_correction_during_confirmation(fake_llm):
@@ -135,7 +135,7 @@ def test_side_question_keeps_booking(fake_llm):
 def test_large_group_goes_to_private_dining(fake_llm):
     fake_llm.slots["Book a table for 25 people"] = {"people": 25}
     reply, state = say("Book a table for 25 people", {})
-    assert "private dining" in reply and state == {}
+    assert "private dining" in reply and "flow" not in state
 
 
 def test_closed_day_and_hours_explained(fake_llm):
@@ -160,7 +160,7 @@ def test_stop_booking_with_cancel_that(fake_llm):
     fake_llm.slots["book a table"] = {}
     _, state = say("book a table", {})
     reply, state = say("cancel that", state)
-    assert "stopped this booking" in reply and state == {}
+    assert "stopped this booking" in reply and "flow" not in state
 
 
 CANCEL_MSG = "cancel my booking for tomorrow at 8 pm, number 9876543210"

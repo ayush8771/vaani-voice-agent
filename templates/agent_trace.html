@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent activity — Vaani</title>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+<div class="admin-shell">
+    <section class="admin-card">
+        <header class="topbar">
+            <div class="topbar-main">
+                <span class="identity-badge" aria-hidden="true">V</span>
+                <div>
+                    <p class="eyebrow">Agent activity</p>
+                    <h1>Tool calls</h1>
+                    <p>Every action Vaani took, newest first. Model: <strong>{{ model }}</strong>
+                       {% if not agent_enabled %}(agent disabled){% endif %}.
+                       <em>rules</em> = instant rule path, <em>agent</em> = LLM agent over MCP,
+                       <em>mcp-external</em> = outside MCP client.</p>
+                </div>
+            </div>
+            <a href="/admin" class="secondary-btn">← Bookings</a>
+        </header>
+
+        {% if handoffs %}
+        <section class="audit">
+            <h3>Staff handoffs</h3>
+            <table>
+                <thead><tr><th>#</th><th>Time</th><th>Reason</th><th>Summary</th></tr></thead>
+                <tbody>
+                {% for h in handoffs %}
+                    <tr><td>{{ h[0] }}</td><td>{{ h[1] }}</td><td>{{ h[2] }}</td><td>{{ h[3] or '' }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endif %}
+
+        <section class="audit">
+            <h3>Recent tool calls</h3>
+            {% if calls %}
+            <div class="table-wrap">
+            <table class="trace">
+                <thead><tr><th>Time</th><th>Call</th><th>Path</th><th>Tool</th><th>Arguments</th>
+                           <th>Result</th><th>ms</th></tr></thead>
+                <tbody>
+                {% for c in calls %}
+                    <tr class="{{ 'ok' if c.ok else 'not-ok' }}">
+                        <td>{{ c.ts[11:19] }}</td>
+                        <td><code>{{ c.session }}</code></td>
+                        <td><span class="path path-{{ c.path }}">{{ c.path }}</span></td>
+                        <td><code>{{ c.tool }}</code></td>
+                        <td><code class="args">{{ c.args }}</code></td>
+                        <td>{{ c.message }}</td>
+                        <td>{{ c.latency_ms }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <div class="empty-state"><p>No tool calls yet. Talk to Vaani to see them here.</p></div>
+            {% endif %}
+        </section>
+    </section>
+</div>
+</body>
+</html>

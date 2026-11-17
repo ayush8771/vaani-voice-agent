@@ -105,3 +105,17 @@ def test_open_redirect_blocked(client):
     response = client.post("/admin/login?next=//evil.example.com",
                            data={"username": "owner1", "password": "correct-horse-battery"})
     assert response.location.endswith("/admin")
+
+
+def test_agent_activity_page_owner_only(client):
+    from vaani_mcp import tools
+    tools.run("check_availability", date=TOMORROW, time="20:00", party_size=2)
+    admins.create_admin("staff1", "correct-horse-battery", "staff")
+    login(client, "staff1", "correct-horse-battery")
+    assert client.get("/admin/agent").status_code == 403
+    client.post("/admin/logout")
+    admins.create_admin("owner1", "correct-horse-battery", "owner")
+    login(client, "owner1", "correct-horse-battery")
+    page = client.get("/admin/agent")
+    assert page.status_code == 200 and b"check_availability" in page.data
+    assert b"Agent activity" in client.get("/admin").data

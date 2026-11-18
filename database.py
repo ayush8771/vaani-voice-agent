@@ -75,6 +75,31 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id, id);
 
+CREATE TABLE IF NOT EXISTS customers (
+    phone          TEXT PRIMARY KEY,
+    name           TEXT,
+    lang           TEXT,
+    visits         INTEGER NOT NULL DEFAULT 0,
+    last_people    INTEGER,
+    last_time      TEXT,
+    notes          TEXT,
+    updated_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS waitlist (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    date         TEXT    NOT NULL,
+    time         TEXT    NOT NULL,
+    people       INTEGER NOT NULL,
+    name         TEXT    NOT NULL,
+    phone        TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'waiting'
+                     CHECK(status IN ('waiting', 'notified', 'expired')),
+    created_at   TEXT    NOT NULL,
+    notified_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_slot ON waitlist(date, status);
+
 CREATE TABLE IF NOT EXISTS handoffs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT,
@@ -101,6 +126,9 @@ BOOKING_MIGRATIONS = {
     "token":         "ALTER TABLE bookings ADD COLUMN token TEXT",
     "checked_in_at": "ALTER TABLE bookings ADD COLUMN checked_in_at TEXT",
     "created_at":    "ALTER TABLE bookings ADD COLUMN created_at TEXT",
+    "notes":         "ALTER TABLE bookings ADD COLUMN notes TEXT",
+    "reminder_sent_at": "ALTER TABLE bookings ADD COLUMN reminder_sent_at TEXT",
+    "feedback_sent_at": "ALTER TABLE bookings ADD COLUMN feedback_sent_at TEXT",
 }
 
 INDEXES = (
@@ -185,7 +213,7 @@ def active_tables(con: sqlite3.Connection) -> list:
 # ── ADMIN QUERIES ─────────────────────────────────────────────────────────────
 BOOKING_COLUMNS = (
     "b.id, b.date, b.time, b.people, b.name, b.phone, b.status, "
-    "COALESCE(t.label, '-'), b.checked_in_at"
+    "COALESCE(t.label, '-'), b.checked_in_at, b.notes"
 )
 BOOKING_FROM = "FROM bookings b LEFT JOIN restaurant_tables t ON t.id = b.table_id"
 

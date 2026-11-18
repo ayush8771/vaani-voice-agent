@@ -242,9 +242,28 @@ def local_date(text: str, lang: str) -> str:
     return f"{day}, {num} {month}"
 
 
+# Booking notes (dietary needs and occasions) as spoken in each language
+NOTE_LABELS = {
+    "nut allergy": ("नट्स से एलर्जी", "nuts se allergy", "ನಟ್ಸ್ ಅಲರ್ಜಿ"),
+    "gluten-free": ("ग्लूटेन-फ्री खाना", "gluten-free khana", "ಗ್ಲುಟೆನ್-ಫ್ರೀ ಆಹಾರ"),
+    "Jain food": ("जैन खाना", "Jain khana", "ಜೈನ ಆಹಾರ"),
+    "vegan": ("वीगन खाना", "vegan khana", "ವೀಗನ್ ಆಹಾರ"),
+    "vegetarian": ("शाकाहारी खाना", "veg khana", "ಸಸ್ಯಾಹಾರಿ ಆಹಾರ"),
+    "wheelchair access": ("व्हीलचेयर की सुविधा", "wheelchair access", "ವೀಲ್‌ಚೇರ್ ವ್ಯವಸ್ಥೆ"),
+    "high chair": ("बच्चों की कुर्सी", "baby chair", "ಮಕ್ಕಳ ಕುರ್ಚಿ"),
+    "birthday": ("जन्मदिन", "birthday", "ಹುಟ್ಟುಹಬ್ಬ"),
+    "anniversary": ("सालगिरह", "anniversary", "ವಾರ್ಷಿಕೋತ್ಸವ"),
+    "date night": ("डेट नाइट", "date night", "ಡೇಟ್ ನೈಟ್"),
+    "business meal": ("बिज़नेस मील", "business meal", "ಬಿಸಿನೆಸ್ ಊಟ"),
+}
+
+
 def _local_value(kind: str, value: str, lang: str) -> str:
     if kind == "date":
         return local_date(value, lang)
+    if kind == "notes":
+        index = {"hi": 0, "hinglish": 1, "kn": 2}[lang]
+        return ", ".join(NOTE_LABELS.get(n.strip(), (n,) * 3)[index] for n in value.split(","))
     if lang == "kn" and kind in ("hours", "times"):
         out = local_times(value, lang, at=False)
         if kind == "hours":                     # "X to Y" -> "Xಯಿಂದ Yಯವರೆಗೆ"
@@ -387,9 +406,32 @@ SENTENCES = {
     "How can I help now?": ("अब मैं कैसे मदद करूं?", "Ab main kaise help karun?"),
     "Hello!": ("नमस्ते!", "Namaste!"),
     "How can I help you today?": ("आज मैं आपकी क्या मदद कर सकती हूं?", "Aaj main aapki kya help kar sakti hoon?"),
+    # Phase 4: memory and waitlist
+    "Welcome back, {name}!": ("फिर से स्वागत है, {name}!", "Welcome back, {name}!"),
+    "I will remember your preferences to make your next booking quicker.":
+        ("अगली बार बुकिंग जल्दी करने के लिए मैं आपकी पसंद याद रखूंगी।",
+         "Agli baar booking jaldi karne ke liye main aapki pasand yaad rakhungi."),
+    "Say forget me any time to remove them.": ("इन्हें हटाने के लिए कभी भी 'forget me' बोलिए।",
+                                               "Inhe hatane ke liye kabhi bhi 'forget me' boliye."),
+    "Please tell me the 10-digit mobile number whose saved details I should remove.":
+        ("कृपया वह 10 अंकों का मोबाइल नंबर बताइए जिसकी जानकारी मुझे हटानी है।",
+         "Please woh 10-digit mobile number bataiye jiski details mujhe hatani hain."),
+    "Done, I have removed the details I remembered for that number.":
+        ("हो गया, उस नंबर के लिए याद रखी गई जानकारी मैंने हटा दी है।",
+         "Ho gaya, us number ki saved details maine hata di hain."),
+    "I had nothing saved for that number.": ("उस नंबर के लिए मेरे पास कुछ भी सेव नहीं था।",
+                                             "Us number ke liye mere paas kuch save nahi tha."),
+    "Or I can add you to the waitlist for {time}.": ("या मैं आपको {time} की वेटिंग लिस्ट में डाल सकती हूं।",
+                                                     "Ya main aapko {time} ki waiting list mein daal sakti hoon."),
+    "Say waitlist if you would like that.": ("अगर चाहें तो वेटिंग लिस्ट बोलिए।", "Agar chahein toh waiting list boliye."),
+    "You are on the waitlist for {date} at {time}.": ("आप {date} को {time} की वेटिंग लिस्ट में हैं।",
+                                                      "Aap {date} ko {time} ki waiting list mein hain."),
+    "I have noted: {notes}.": ("मैंने नोट कर लिया है: {notes}।", "Maine note kar liya hai: {notes}."),
+    "I will message you on WhatsApp if a table frees up.":
+        ("टेबल खाली होते ही मैं आपको WhatsApp पर बताऊंगी।", "Table khaali hote hi main aapko WhatsApp par bataungi."),
 }
 
-_TYPED = {"date": "date", "time": "time", "times": "times", "hours": "hours"}
+_TYPED = {"date": "date", "time": "time", "times": "times", "hours": "hours", "notes": "notes"}
 
 
 def _compile(template: str):

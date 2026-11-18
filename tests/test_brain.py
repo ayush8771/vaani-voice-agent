@@ -55,10 +55,10 @@ def test_booking_works_while_llm_is_down(fake_llm):
     fake_llm.down = True
     reply, state = say("I wanted to book a table for 4 to for tomorrow at 8:00 PM", {})
     assert state["slots"]["date"] == TOMORROW and state["slots"]["time"] == "20:00"
-    assert state["slots"]["people"] == 4 and reply == brain.BOOKING_Q["name"]
+    assert state["slots"]["people"] == 4 and reply == brain.BOOKING_Q["phone"]
 
-    reply, state = say("Ravi", state)
     reply, state = say("9876543210", state)
+    reply, state = say("Ravi", state)
     assert "Just to confirm" in reply
     reply, state = say("yes", state)
     assert "is confirmed" in reply
@@ -82,9 +82,11 @@ def test_answer_to_question_is_accepted_without_keywords(fake_llm):
     fake_llm.slots["Thursday at 8 pm for 4 people"] = {"date": TOMORROW, "time": "20:00", "people": 4}
     _, state = say("I want to book a table", {})
     _, state = say("Thursday at 8 pm for 4 people", state)
-    assert state["asked"] == "name"
+    assert state["asked"] == "phone"           # phone before name: returning callers are recognised
+    reply, state = say("9876543210", state)
+    assert reply == brain.BOOKING_Q["name"]
     reply, state = say("Ravi", state)
-    assert state["slots"]["name"] == "Ravi" and reply == brain.BOOKING_Q["phone"]
+    assert state["slots"]["name"] == "Ravi" and reply.startswith("Just to confirm")
 
 
 def test_small_talk_does_not_wipe_booking(fake_llm):

@@ -95,18 +95,51 @@ caller audio --> Gnani Prisma (speech-to-text, detects the language every turn)
   callers hear those answers in English until a stronger model (e.g. Sarvam) is configured.
 - **Without a Gnani key** Vaani uses the browser's speech recognition and Edge-TTS.
 
+### Specialist agents
+
+| Agent | Serves | Triggered by | Tools |
+|-------|--------|--------------|-------|
+| Router (`brain.py`) | Caller | Every turn | Rules: picks the rule flow or a specialist |
+| Reservation | Caller | Availability, bookings, status, cancel, waitlist | `check_availability`, `prepare_booking`, `get_booking_status`, `start_cancellation`, `join_waitlist` |
+| Concierge | Caller | Menu, prices, hours, policies; runs **in parallel** with Reservation for mixed requests | `query_menu_faq`, `get_opening_hours` |
+| Care | Caller | Complaints, special requests, managers (always reaches staff) | `escalate_to_human`, `get_booking_status` |
+| Analytics | Owner | Questions on `/admin/ask` | Text-to-SQL through the official **SQLite MCP server** (stdio, read-only copy) |
+| Ops | Restaurant | Schedule (`python manage.py run-ops`) | Reminders, waitlist offers, feedback requests |
+
+Each specialist only sees its own tools; tool calls are logged as `agent:<specialist>` on `/admin/agent`.
+
+### Customer memory
+
+- Vaani asks for the phone before the name, so returning callers hear **"Welcome back, Ravi!"** and are not
+  asked their name again; "my usual table" reuses the remembered party size and time.
+- Dietary needs (nut allergy, vegetarian, Jain...) and occasions (birthday, anniversary...) become booking
+  notes that staff see on the dashboard; occasion offers come from `knowledge/offers.json` (owner-editable).
+- First-time callers are told their preferences are remembered; **"forget me"** (also in Hindi and Kannada)
+  deletes the profile.
+- A full slot offers the **waitlist**; the ops agent messages waiting guests as soon as a table frees up.
+
+### Owner analytics (MCP client)
+
+`/admin/ask` answers questions like "Which time slots were busiest this week?". The LLM writes one SQL
+query, `sqlglot` checks it (single read-only SELECT, known tables only, row limit), and it runs through the
+official `mcp-server-sqlite` over stdio against a fresh analytics copy (phones masked to the last 4 digits,
+no admin accounts, codes or tokens). The owner sees the answer, the rows and the exact SQL.
+
 ### Evaluation set
 
-55 scripted conversations (15 English, 15 Hindi, 15 Hinglish, 10 Kannada) run against the real LLM, checking the
-booking made, the reply language and the tools called:
+63 scripted conversations (22 English, 16 Hindi, 15 Hinglish, 10 Kannada, including returning callers,
+the waitlist, complaints and parallel specialists) run against the real LLM, checking the booking made,
+the reply language, the tools called and what was said; plus 8 owner analytics questions checked against
+hand-written SQL:
 
 ```bash
-python -m evals.run                     # all cases with the model in .env
+python -m evals.run                     # conversations, with the model in .env
 python -m evals.run --lang hi --verbose # one language, print the dialogue
+python -m evals.analytics_eval          # owner analytics questions
 python -m evals.run --model sarvam-30b --base-url https://api.sarvam.ai/v1
 ```
 
-Results are saved to `evals/results/`.
+Results are saved to `evals/results/`. With qwen2.5:7b: conversations 63/63, analytics 8/8.
 
 ## 🏗️ Tech Stack
 
@@ -137,6 +170,9 @@ vaani-restaurant-automation/
 ├── phrases.py              # Sentences shared by the rule flow, agent and tools
 ├── i18n.py                 # Language detection, Hindi/Hinglish/Kannada <-> English, reply localisation
 ├── i18n_kn.py              # Kannada language pack (sentences, booking words, numbers)
+├── memory.py               # Returning callers, dietary notes, occasions, forget me
+├── analytics.py            # Owner analytics agent (text-to-SQL via the SQLite MCP server)
+├── ops.py                  # Ops agent: reminders, waitlist offers, feedback requests
 ├── evals/                  # Multilingual evaluation set (cases.json) and runner (run.py)
 ├── bookings.py             # Booking rules: atomic booking, cancel, restore, QR lookup
 ├── availability.py         # Opening hours, timezone, table assignment, alternatives
@@ -353,6 +389,7 @@ docker run -p 8000:8000 --env-file .env -e OLLAMA_URL=http://host.docker.interna
 | `/admin/export` | GET | Export bookings as CSV (owner only) |
 | `/admin/checkin/<signed>` | GET/POST | Staff check-in page opened by scanning the guest's QR |
 | `/admin/agent` | GET | Every tool call (rule path, agent, external MCP) and staff handoffs (owner only) |
+| `/admin/ask` | GET/POST | Ask your data: plain-language analytics questions (owner only) |
 | `/health` | GET | Service health check |
 
 ---

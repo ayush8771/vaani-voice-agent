@@ -20,7 +20,8 @@
                 </div>
             </div>
             <div class="topbar-actions">
-                {% if role == 'owner' %}<a href="{{ url_for('admin_agent') }}" class="secondary-btn">Agent activity</a>{% endif %}
+                {% if role == 'owner' %}<a href="{{ url_for('admin_ask') }}" class="secondary-btn">Ask your data</a>
+                <a href="{{ url_for('admin_agent') }}" class="secondary-btn">Agent activity</a>{% endif %}
                 <span class="who">{{ admin_user }} ({{ role }})</span>
                 <form method="POST" action="{{ url_for('admin_logout') }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -131,7 +132,7 @@
                         <td data-label="Date">{{ b[1] }}</td>
                         <td data-label="Time">{{ b[2] }}</td>
                         <td data-label="Guests">{{ b[3] }}</td>
-                        <td data-label="Name">{{ b[4] }}</td>
+                        <td data-label="Name">{{ b[4] }}{% if b[9] %}<div class="booking-notes">{{ b[9] }}</div>{% endif %}</td>
                         <td data-label="Phone">{{ b[5] }}</td>
                         <td data-label="Table">{{ b[7] }}</td>
                         <td data-label="Status">

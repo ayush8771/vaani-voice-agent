@@ -42,7 +42,7 @@ def checkin_url(qr_value: str) -> str:
 
 
 def book(date: str, time: str, people: int, name: str, phone: str,
-         notify: bool = True) -> BookingResult:
+         notify: bool = True, notes: str = "") -> BookingResult:
     rule = av.check_slot_rules(date, time, people)
     if not rule.ok:
         return BookingResult(False, rule.reason, rule.message)
@@ -58,9 +58,9 @@ def book(date: str, time: str, people: int, name: str, phone: str,
         table_id, label, _ = table
         cur = con.execute(
             "INSERT INTO bookings(date, time, end_time, people, name, phone, status, "
-            "table_id, token, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)",
+            "table_id, token, created_at, notes) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?)",
             (date, time, av.end_time(time), people, name, phone, table_id, token,
-             av.now().isoformat(timespec="seconds")),
+             av.now().isoformat(timespec="seconds"), (notes or "")[:300] or None),
         )
         booking_id = cur.lastrowid
 
@@ -93,10 +93,20 @@ def cancel(booking_id: int, notify: bool = True) -> bool:
         if not row:
             return False
         con.execute("UPDATE bookings SET status='cancelled' WHERE id=?", (booking_id,))
+    name, phone, date, time = row
     if notify:
-        name, phone, date, time = row
         whatsapp.send_cancellation(name=name, phone=phone, date=date, time=time)
+    _offer_freed_table(date)
     return True
+
+
+def _offer_freed_table(date: str) -> None:
+    """A table just freed up: tell anyone waiting for that day (ops agent)."""
+    try:
+        import ops
+        ops.notify_waitlist(av.now(), date)
+    except Exception:
+        logger.exception("Waitlist check after cancellation failed")
 
 
 def restore(booking_id: int) -> str:
@@ -122,7 +132,12 @@ def restore(booking_id: int) -> str:
 
 
 def admin_cancel(booking_id: int) -> bool:
-    return set_booking_status(booking_id, "cancelled")
+    with connection() as con:
+        row = con.execute("SELECT date FROM bookings WHERE id=?", (booking_id,)).fetchone()
+    done = set_booking_status(booking_id, "cancelled")
+    if done and row:
+        _offer_freed_table(row[0])
+    return done
 
 
 def lookup_by_qr(qr_value: str):

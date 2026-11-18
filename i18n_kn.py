@@ -102,6 +102,21 @@ SENTENCES = {
     "How can I help now?": "ಈಗ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
     "Hello!": "ನಮಸ್ಕಾರ!",
     "How can I help you today?": "ಇಂದು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
+    # Phase 4: memory and waitlist
+    "Welcome back, {name}!": "ಮತ್ತೆ ಸ್ವಾಗತ, {name}!",
+    "I will remember your preferences to make your next booking quicker.":
+        "ಮುಂದಿನ ಬಾರಿ ಬುಕಿಂಗ್ ಬೇಗ ಆಗಲು ನಿಮ್ಮ ಆದ್ಯತೆಗಳನ್ನು ನೆನಪಿಟ್ಟುಕೊಳ್ಳುತ್ತೇನೆ.",
+    "Say forget me any time to remove them.": "ಅವುಗಳನ್ನು ತೆಗೆದುಹಾಕಲು ಯಾವಾಗ ಬೇಕಾದರೂ 'forget me' ಎಂದು ಹೇಳಿ.",
+    "Please tell me the 10-digit mobile number whose saved details I should remove.":
+        "ಯಾವ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ನಂಬರ್‌ನ ವಿವರಗಳನ್ನು ತೆಗೆದುಹಾಕಬೇಕು ಎಂದು ಹೇಳಿ.",
+    "Done, I have removed the details I remembered for that number.":
+        "ಆಯ್ತು, ಆ ನಂಬರ್‌ಗೆ ನೆನಪಿಟ್ಟಿದ್ದ ವಿವರಗಳನ್ನು ತೆಗೆದುಹಾಕಿದ್ದೇನೆ.",
+    "I had nothing saved for that number.": "ಆ ನಂಬರ್‌ಗೆ ನನ್ನಲ್ಲಿ ಏನೂ ಉಳಿಸಿರಲಿಲ್ಲ.",
+    "Or I can add you to the waitlist for {time}.": "ಅಥವಾ {time} ವೇಟಿಂಗ್ ಲಿಸ್ಟ್‌ಗೆ ನಿಮ್ಮನ್ನು ಸೇರಿಸಬಹುದು.",
+    "Say waitlist if you would like that.": "ಬೇಕಿದ್ದರೆ ವೇಟಿಂಗ್ ಲಿಸ್ಟ್ ಎಂದು ಹೇಳಿ.",
+    "You are on the waitlist for {date} at {time}.": "ನೀವು {date}, {time} ವೇಟಿಂಗ್ ಲಿಸ್ಟ್‌ನಲ್ಲಿದ್ದೀರಿ.",
+    "I have noted: {notes}.": "ನಾನು ಗಮನಿಸಿಕೊಂಡಿದ್ದೇನೆ: {notes}.",
+    "I will message you on WhatsApp if a table frees up.": "ಟೇಬಲ್ ಖಾಲಿಯಾದ ತಕ್ಷಣ WhatsApp ನಲ್ಲಿ ತಿಳಿಸುತ್ತೇನೆ.",
 }
 
 DAYS = {"Monday": "ಸೋಮವಾರ", "Tuesday": "ಮಂಗಳವಾರ", "Wednesday": "ಬುಧವಾರ", "Thursday": "ಗುರುವಾರ",

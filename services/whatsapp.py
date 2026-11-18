@@ -89,3 +89,9 @@ def send_otp(phone: str, code: str) -> bool:
         return False
     return _send(to, f"Your {settings.restaurant_name} verification code is {code}. "
                      f"It expires in {settings.otp_ttl_minutes} minutes. Do not share it.")
+
+
+def send_text(phone: str, body: str) -> bool:
+    """A plain message to a guest (reminders, waitlist offers, feedback requests)."""
+    to = _customer(phone)
+    return bool(to) and _send(to, body)

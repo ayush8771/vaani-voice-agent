@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ask your data — Vaani</title>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+<div class="admin-shell">
+    <section class="admin-card">
+        <header class="topbar">
+            <div class="topbar-main">
+                <span class="identity-badge" aria-hidden="true">V</span>
+                <div>
+                    <p class="eyebrow">Analytics agent</p>
+                    <h1>Ask your data</h1>
+                    <p>Questions are turned into a read-only SQL query and run through the SQLite MCP server
+                       on a copy of your data (phone numbers masked).</p>
+                </div>
+            </div>
+            <a href="/admin" class="secondary-btn">← Bookings</a>
+        </header>
+
+        <form method="POST" class="search-row ask-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="text" name="question" maxlength="300" required autofocus
+                   placeholder="e.g. Which time slots were busiest this week?"
+                   value="{{ result.question if result else '' }}">
+            <button type="submit" class="primary-btn">Ask</button>
+        </form>
+
+        <div class="examples">
+            {% for q in examples %}
+            <form method="POST" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="question" value="{{ q }}">
+                <button type="submit" class="chip-btn">{{ q }}</button>
+            </form>
+            {% endfor %}
+        </div>
+
+        {% if result %}
+        <section class="audit">
+            {% if result.error %}
+            <div class="error-msg" role="alert">{{ result.error }}</div>
+            {% else %}
+            <h3>Answer</h3>
+            <p class="answer">{{ result.summary }}</p>
+            {% if result.rows %}
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>{% for k in result.rows[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr></thead>
+                    <tbody>
+                    {% for row in result.rows[:50] %}
+                        <tr>{% for v in row.values() %}<td>{{ v }}</td>{% endfor %}</tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+            <p class="meta-row">Answered in {{ '%.1f' % result.seconds }} s</p>
+            {% endif %}
+            {% if result.sql %}
+            <details>
+                <summary>SQL that was run</summary>
+                <pre class="sql">{{ result.sql }}</pre>
+            </details>
+            {% endif %}
+        </section>
+        {% endif %}
+    </section>
+</div>
+</body>
+</html>

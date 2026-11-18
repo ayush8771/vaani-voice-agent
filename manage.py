@@ -7,6 +7,7 @@ manage.py — admin account management from the terminal.
   python manage.py disable-2fa --username NAME
   python manage.py list-admins
   python manage.py build-index
+  python manage.py run-ops [--loop 300]
 """
 
 import argparse
@@ -37,6 +38,8 @@ def main(argv=None) -> None:
         sub.add_parser(name).add_argument("--username", required=True)
 
     sub.add_parser("list-admins")
+    ops_cmd = sub.add_parser("run-ops")
+    ops_cmd.add_argument("--loop", type=int, metavar="SECONDS", help="repeat every SECONDS")
     sub.add_parser("build-index")
 
     args = parser.parse_args(argv)
@@ -81,6 +84,15 @@ def main(argv=None) -> None:
             print("No admins yet. Run: python manage.py create-admin --role owner")
         for username, role, has_2fa, created in rows:
             print(f"{username:20} {role:6} 2FA={'on' if has_2fa else 'off':3}  created {created}")
+
+    elif args.command == "run-ops":
+        import time
+        import ops
+        while True:
+            print(ops.run_once())
+            if not args.loop:
+                break
+            time.sleep(args.loop)
 
     elif args.command == "build-index":
         from rag_store import build_index

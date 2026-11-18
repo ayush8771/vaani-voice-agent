@@ -51,6 +51,13 @@ def _bootstrap_rag() -> None:
         logger.warning("RAG index not built (is Ollama running?): %s", exc)
 
 
+def _start_ops() -> None:
+    """Reminders, waitlist and feedback jobs inside the app (OPS_IN_APP=true)."""
+    if settings.ops_in_app:
+        import ops
+        ops.start_background(settings.ops_interval)
+
+
 def _warm_up_llm() -> None:
     """Load the LLM in the background so the first caller does not hit a cold start."""
     import threading
@@ -330,12 +337,33 @@ def _register_routes(app: Flask) -> None:
                                              date_from=f["date_from"], date_to=f["date_to"])
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["ID", "Date", "Time", "Guests", "Name", "Phone", "Status", "Table", "Checked in"])
+        writer.writerow(["ID", "Date", "Time", "Guests", "Name", "Phone", "Status", "Table", "Checked in", "Notes"])
         writer.writerows(rows)
         audit(_actor(), "export", f"{len(rows)} rows", _client_ip())
         filename = f"bookings_export_{datetime.now():%Y%m%d_%H%M%S}.csv"
         return Response(output.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    # ── Owner analytics: plain-language questions over the SQLite MCP server ──
+    @app.route("/admin/ask", methods=["GET", "POST"])
+    @require_role("owner")
+    @limiter.limit("20 per minute")
+    def admin_ask():
+        import analytics
+        result = None
+        if request.method == "POST":
+            question = (request.form.get("question") or "").strip()[:300]
+            if question:
+                result = analytics.answer(question)
+                audit(_actor(), "analytics", question[:120], _client_ip())
+        return render_template("analytics.html", result=result, examples=[
+            "Which time slots were busiest this week?",
+            "How many confirmed bookings do we have tomorrow?",
+            "What share of bookings were cancelled?",
+            "Which weekday gets the most guests?",
+            "How many returning customers do we have?",
+            "How many people are on the waitlist?",
+        ])
 
     # ── Agent activity (every tool call, rule path and agent path) ───────────
     @app.route("/admin/agent")
@@ -408,5 +436,6 @@ if __name__ == "__main__":
     _bootstrap_rag()
     _warm_up_llm()
     application = create_app()
+    _start_ops()
     application.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
                     host="127.0.0.1", port=int(os.getenv("PORT", 5000)))

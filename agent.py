@@ -1,5 +1,13 @@
 """
-agent.py — the tool-calling LLM agent.
+agent.py — the tool-calling LLM agents.
+
+Specialists, each with only the tools its job needs:
+  reservation  availability, bookings, booking status, cancellations, waitlist
+  concierge    menu, prices, hours, parking, policies
+  care         complaints, special requests, managers (hands off to staff)
+  general      anything else
+The router in brain.py picks the specialist; when a request also asks a
+menu/FAQ question, the concierge answers it in parallel.
 
 The agent handles open-ended and multi-step requests ("is there a table for 4
 tomorrow at 8, and do you have parking?", "is my booking confirmed?", "I want
@@ -17,10 +25,13 @@ write a booking or a cancellation itself:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Optional
 
 import availability as av
@@ -33,7 +44,7 @@ from vaani_mcp.server import build_server, result_to_dict
 logger = logging.getLogger(__name__)
 
 AGENT_TOOLS = ("check_availability", "get_opening_hours", "prepare_booking", "get_booking_status",
-               "start_cancellation", "query_menu_faq", "escalate_to_human")
+               "start_cancellation", "join_waitlist", "query_menu_faq", "escalate_to_human")
 HANDOFF_TOOLS = ("prepare_booking", "start_cancellation", "escalate_to_human")
 HISTORY_TURNS = 6
 
@@ -77,14 +88,14 @@ class McpBridge:
                                                   "parameters": t.inputSchema}}
                 for t in listed.tools if t.name in allowed]
 
-    def call(self, name: str, args: dict) -> dict:
+    def call(self, name: str, args: dict, path: str = "agent") -> dict:
         started = time.time()
         try:
             result = result_to_dict(self._submit(self._session.call_tool(name, args), 60))
         except Exception as exc:
             logger.exception("MCP call %s failed", name)
             result = {"ok": False, "reason": "error", "error": str(exc)}
-        tools.log_call("agent", name, args, result, int((time.time() - started) * 1000))
+        tools.log_call(path, name, args, result, int((time.time() - started) * 1000))
         return result
 
 
@@ -103,13 +114,14 @@ def bridge() -> McpBridge:
 
 
 # ── PROMPT ────────────────────────────────────────────────────────────────────
-def _system_prompt() -> str:
+def _system_prompt(focus: str = "") -> str:
     today = av.today()
     week = ", ".join(f"{(today + __import__('datetime').timedelta(days=i)).strftime('%A')} = "
                      f"{(today + __import__('datetime').timedelta(days=i)).isoformat()}" for i in range(7))
     return (
         f"You are VAANI, the voice receptionist of {settings.restaurant_name}. "
         f"Today is {today.strftime('%A')} {today.isoformat()}. Next 7 days: {week}.\n"
+        f"{focus}\n"
         "Rules:\n"
         "- Use tools for every fact about tables, hours, bookings, menu, prices and policies. "
         "Never invent availability, prices or policies.\n"
@@ -176,12 +188,104 @@ def _apply_handoff(name: str, result: dict, state: dict) -> Optional[str]:
     return None
 
 
-# ── AGENT LOOP ────────────────────────────────────────────────────────────────
-def run(msg: str, state: dict, info_question: Optional[str] = None) -> Optional[str]:
-    """Answer one caller turn with tools. Returns the reply, or None if the LLM is unavailable.
+# ── SPECIALIST AGENTS ─────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Specialist:
+    tools: tuple
+    focus: str
 
-    info_question: a menu/FAQ question the router spotted in the caller's words. If the
-    model forgets to look it up, it is looked up here, so no part of the request is dropped.
+
+SPECIALISTS = {
+    "reservation": Specialist(
+        ("check_availability", "get_opening_hours", "prepare_booking", "get_booking_status",
+         "start_cancellation", "join_waitlist"),
+        "You are the reservation specialist: table availability, new bookings, booking status, "
+        "cancellations and the waitlist."),
+    "concierge": Specialist(
+        ("query_menu_faq", "get_opening_hours"),
+        "You are the concierge: you answer questions about the menu, prices, dietary options, hours, "
+        "parking and policies. Always call query_menu_faq for these."),
+    "care": Specialist(
+        ("escalate_to_human", "get_booking_status"),
+        "You are guest care: complaints, special requests (cakes, decorations, surprises) and anyone "
+        "asking for a manager. Call escalate_to_human with a short reason and summary."),
+    "general": Specialist(AGENT_TOOLS, "You handle any request a guest makes."),
+}
+
+
+@dataclass
+class AgentTurn:
+    parts: list = field(default_factory=list)   # sentences to speak, from tools' own words
+    handoff: bool = False                       # the conversation moved into the rule flow
+    offer: bool = False                         # a free table was found: offer to book it
+    reply: Optional[str] = None                 # the model's own reply (no tool words to speak)
+
+
+def _run_specialist(name: str, msg: str, state: dict, b: "McpBridge") -> Optional[AgentTurn]:
+    """One specialist's tool loop. Returns None if the LLM is unavailable."""
+    spec = SPECIALISTS[name]
+    schemas = [s for s in _schemas if s["function"]["name"] in spec.tools]
+    history = state.get("history", [])[-HISTORY_TURNS:]
+    messages = [{"role": "system", "content": _system_prompt(spec.focus)}, *history,
+                {"role": "user", "content": msg + _hints(msg)}]
+
+    turn = AgentTurn()                            # answers gathered across steps are kept
+    for step in range(settings.agent_max_steps):
+        out = llm_client.chat(messages, tools=schemas, max_tokens=200)
+        if out is None:
+            return turn if turn.parts else None
+        if not out["tool_calls"]:
+            if turn.parts:
+                return turn
+            return AgentTurn(reply=out["content"] or phrases.unsure_reply())
+
+        messages.append({"role": "assistant", "content": out["content"], "tool_calls": out["tool_calls"]})
+        retry = False
+        for call in out["tool_calls"]:
+            tool, args = call["name"], call["arguments"]
+            if tool not in spec.tools:
+                # Outside this specialist's job (another specialist covers it): refuse, keep going.
+                messages.append({"role": "tool", "name": tool, "tool_call_id": call["id"],
+                                 "content": json.dumps({"error": f"{tool} is not your job; skip it."})})
+                continue
+            result = b.call(tool, args, path=f"agent:{name}")
+            safe = {k: v for k, v in result.items() if k not in ("hold_token", "cancel_token", "dev_code")}
+            messages.append({"role": "tool", "name": tool, "tool_call_id": call["id"],
+                             "content": json.dumps(safe)[:1500]})
+
+            if result.get("reason") in ("tool_error", "error") or "error" in result:
+                retry = True                      # let the model see the error and try again
+            elif tool in HANDOFF_TOOLS:
+                said = _apply_handoff(tool, result, state)
+                if said:
+                    turn.parts.append(said)
+                turn.handoff = True
+            elif result.get("message"):
+                turn.parts.append(result["message"])
+                if tool == "check_availability" and result.get("available"):
+                    turn.offer = _offer_booking(result, state)
+
+        if turn.parts and not retry:
+            # Speak the tools' own verified words: no second LLM call, and no chance
+            # for the model to add facts that are not in our records.
+            return turn
+
+    logger.warning("Specialist %s hit the step limit", name)
+    return AgentTurn(reply=phrases.unsure_reply())
+
+
+def _concierge_answer(question: str, b: "McpBridge") -> AgentTurn:
+    """The concierge answers a question the router already spotted: no LLM tool choice needed."""
+    result = b.call("query_menu_faq", {"query": question}, path="agent:concierge")
+    return AgentTurn(parts=[result["answer"]] if result.get("answer") else [])
+
+
+def run(msg: str, state: dict, info_question: Optional[str] = None,
+        specialist: str = "general") -> Optional[str]:
+    """
+    Answer one caller turn with the chosen specialist. When the router spotted a
+    separate menu/FAQ question, the concierge answers it in parallel.
+    Returns the reply, or None if the LLM is unavailable and nothing could be answered.
     """
     try:
         b = bridge()
@@ -189,53 +293,32 @@ def run(msg: str, state: dict, info_question: Optional[str] = None) -> Optional[
         logger.error("Agent unavailable: %s", exc)
         return None
 
-    history = state.get("history", [])[-HISTORY_TURNS:]
-    messages = [{"role": "system", "content": _system_prompt()}, *history,
-                {"role": "user", "content": msg + _hints(msg)}]
+    if not info_question:
+        turn = _run_specialist(specialist, msg, state, b)
+        if specialist == "care" and turn is not None and not turn.handoff:
+            # Complaints must always reach staff, even if the model only chatted.
+            result = b.call("escalate_to_human", {"reason": msg[:120], "summary": msg[:400]}, path="agent:care")
+            turn = AgentTurn(parts=[_apply_handoff("escalate_to_human", result, state) or ""], handoff=True)
+        return _compose(turn, None)
 
-    for step in range(settings.agent_max_steps):
-        out = llm_client.chat(messages, tools=_schemas, max_tokens=200)
-        if out is None:
-            return None
-        if not out["tool_calls"]:
-            return out["content"] or phrases.unsure_reply()
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vaani-agent") as pool:
+        main = pool.submit(contextvars.copy_context().run, _run_specialist, specialist, msg, state, b)
+        info = pool.submit(contextvars.copy_context().run, _concierge_answer, info_question, b)
+        return _compose(main.result(), info.result())
 
-        messages.append({"role": "assistant", "content": out["content"], "tool_calls": out["tool_calls"]})
-        spoken, handoff_say, retry = [], None, False
-        called = {c["name"] for c in out["tool_calls"]}
-        if info_question and "query_menu_faq" not in called and step == 0:
-            out["tool_calls"].append({"id": "router_info", "name": "query_menu_faq",
-                                      "arguments": {"query": info_question}})
-        for call in out["tool_calls"]:
-            name, args = call["name"], call["arguments"]
-            if name not in AGENT_TOOLS:
-                result = {"ok": False, "error": f"Tool {name} is not available to you."}
-            else:
-                result = b.call(name, args)
-            safe = {k: v for k, v in result.items() if k not in ("hold_token", "cancel_token", "dev_code")}
-            messages.append({"role": "tool", "name": name, "tool_call_id": call["id"],
-                             "content": json.dumps(safe)[:1500]})
 
-            if result.get("reason") in ("tool_error", "error") or "error" in result:
-                retry = True                      # let the model see the error and try again
-            elif name in HANDOFF_TOOLS:
-                handoff_say = _apply_handoff(name, result, state) or handoff_say
-            elif result.get("message"):
-                spoken.append(result["message"])
-                if name == "check_availability" and result.get("available"):
-                    _offer_booking(result, state)
-
-        if handoff_say:
-            spoken.append(handoff_say)
-        if spoken and not retry:
-            # Speak the tools' own verified words: no second LLM call, and no chance
-            # for the model to add facts that are not in our records.
-            if state.get("offer") and not handoff_say:
-                spoken.append("Would you like me to book it?")
-            return _join(spoken)
-
-    logger.warning("Agent hit the step limit")
-    return phrases.unsure_reply()
+def _compose(main: Optional[AgentTurn], info: Optional[AgentTurn]) -> Optional[str]:
+    """Reservation words first, then the concierge's answer, then the booking offer."""
+    if main is None and not (info and info.parts):
+        return None
+    parts = []
+    if main:
+        parts += main.parts or ([main.reply] if main.reply and not (info and info.parts) else [])
+    if info:
+        parts += info.parts
+    if main and main.offer and not main.handoff:
+        parts.append("Would you like me to book it?")
+    return _join(parts) or phrases.unsure_reply()
 
 
 def _join(parts: list) -> str:
@@ -247,16 +330,17 @@ def _join(parts: list) -> str:
     return " ".join(out)
 
 
-def _offer_booking(result: dict, state: dict) -> None:
+def _offer_booking(result: dict, state: dict) -> bool:
     """A free table was found: start a booking with what we know, so 'yes' continues it."""
     if state.get("flow"):
-        return
+        return False
     history = state.get("history")
     state.clear()
     state.update({"flow": "booking", "stage": "collect", "offer": True,
                   "slots": {"date": result["date"], "time": result["time"], "people": result.get("party_size")}})
     if history:
         state["history"] = history
+    return True
 
 
 def remember(state: dict, user: str, reply: str) -> None:

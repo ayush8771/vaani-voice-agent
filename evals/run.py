@@ -60,6 +60,9 @@ def run_case(case: dict, verbose: bool = False) -> dict:
     started = time.time()
     turn_times = []
     for turn in case["turns"]:
+        if turn == "---":                      # a new call from the same or another caller
+            state = {}
+            continue
         t = time.time()
         reply, _audio, state = brain.get_ai_response(turn, state, stt_language=case.get("code"), speak=False)
         turn_times.append(time.time() - t)
@@ -68,10 +71,22 @@ def run_case(case: dict, verbose: bool = False) -> dict:
 
     with connection() as con:
         booked = con.execute("SELECT date, time, people, name FROM bookings WHERE status='confirmed'").fetchall()
+        notes = [r[0] for r in con.execute("SELECT notes FROM bookings ORDER BY id")]
+        waitlist = con.execute("SELECT COUNT(*) FROM waitlist").fetchone()[0]
         tools = [r[0] for r in con.execute("SELECT tool FROM tool_calls ORDER BY id")]
 
     expect, failures = case["expect"], []
-    if "booking" in expect:
+    said = " ".join(answered for _, answered in transcript)
+    for phrase in expect.get("said_all", []):
+        if phrase.lower() not in said.lower():
+            failures.append(f"never said {phrase!r}")
+    if "bookings_count" in expect and len(booked) != expect["bookings_count"]:
+        failures.append(f"{len(booked)} bookings != {expect['bookings_count']}")
+    if "notes" in expect and expect["notes"] not in notes:
+        failures.append(f"notes {notes} lack {expect['notes']!r}")
+    if expect.get("waitlisted") and not waitlist:
+        failures.append("nobody was added to the waitlist")
+    if "booking" in expect and "bookings_count" not in expect:
         b = expect["booking"]
         want = (_resolve_date(b["date"]), b["time"], b["people"], b["name"])
         if booked != [want]:

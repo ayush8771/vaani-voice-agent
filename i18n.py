@@ -242,9 +242,28 @@ def local_date(text: str, lang: str) -> str:
     return f"{day}, {num} {month}"
 
 
+# Booking notes (dietary needs and occasions) as spoken in each language
+NOTE_LABELS = {
+    "nut allergy": ("नट्स से एलर्जी", "nuts se allergy", "ನಟ್ಸ್ ಅಲರ್ಜಿ"),
+    "gluten-free": ("ग्लूटेन-फ्री खाना", "gluten-free khana", "ಗ್ಲುಟೆನ್-ಫ್ರೀ ಆಹಾರ"),
+    "Jain food": ("जैन खाना", "Jain khana", "ಜೈನ ಆಹಾರ"),
+    "vegan": ("वीगन खाना", "vegan khana", "ವೀಗನ್ ಆಹಾರ"),
+    "vegetarian": ("शाकाहारी खाना", "veg khana", "ಸಸ್ಯಾಹಾರಿ ಆಹಾರ"),
+    "wheelchair access": ("व्हीलचेयर की सुविधा", "wheelchair access", "ವೀಲ್‌ಚೇರ್ ವ್ಯವಸ್ಥೆ"),
+    "high chair": ("बच्चों की कुर्सी", "baby chair", "ಮಕ್ಕಳ ಕುರ್ಚಿ"),
+    "birthday": ("जन्मदिन", "birthday", "ಹುಟ್ಟುಹಬ್ಬ"),
+    "anniversary": ("सालगिरह", "anniversary", "ವಾರ್ಷಿಕೋತ್ಸವ"),
+    "date night": ("डेट नाइट", "date night", "ಡೇಟ್ ನೈಟ್"),
+    "business meal": ("बिज़नेस मील", "business meal", "ಬಿಸಿನೆಸ್ ಊಟ"),
+}
+
+
 def _local_value(kind: str, value: str, lang: str) -> str:
     if kind == "date":
         return local_date(value, lang)
+    if kind == "notes":
+        index = {"hi": 0, "hinglish": 1, "kn": 2}[lang]
+        return ", ".join(NOTE_LABELS.get(n.strip(), (n,) * 3)[index] for n in value.split(","))
     if lang == "kn" and kind in ("hours", "times"):
         out = local_times(value, lang, at=False)
         if kind == "hours":                     # "X to Y" -> "Xಯಿಂದ Yಯವರೆಗೆ"
@@ -407,11 +426,12 @@ SENTENCES = {
     "Say waitlist if you would like that.": ("अगर चाहें तो वेटिंग लिस्ट बोलिए।", "Agar chahein toh waiting list boliye."),
     "You are on the waitlist for {date} at {time}.": ("आप {date} को {time} की वेटिंग लिस्ट में हैं।",
                                                       "Aap {date} ko {time} ki waiting list mein hain."),
+    "I have noted: {notes}.": ("मैंने नोट कर लिया है: {notes}।", "Maine note kar liya hai: {notes}."),
     "I will message you on WhatsApp if a table frees up.":
         ("टेबल खाली होते ही मैं आपको WhatsApp पर बताऊंगी।", "Table khaali hote hi main aapko WhatsApp par bataungi."),
 }
 
-_TYPED = {"date": "date", "time": "time", "times": "times", "hours": "hours"}
+_TYPED = {"date": "date", "time": "time", "times": "times", "hours": "hours", "notes": "notes"}
 
 
 def _compile(template: str):

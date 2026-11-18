@@ -25,6 +25,12 @@ def _env(name: str, default: str = "", *fallbacks: str) -> str:
     return default
 
 
+def _ipv4_localhost(url: str) -> str:
+    """'localhost' -> '127.0.0.1'. On Windows, 'localhost' is tried over IPv6 first; Ollama
+    listens on IPv4 only, so every request waited ~2 s for the IPv6 attempt to fail."""
+    return url.replace("://localhost", "://127.0.0.1")
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(_env(name, str(default)))
@@ -158,8 +164,8 @@ class Settings:
             otp_dev_echo=_env_bool("OTP_DEV_ECHO", False),
             login_max_fails=_env_int("LOGIN_MAX_FAILS", 5),
             login_lockout_seconds=_env_int("LOGIN_LOCKOUT_SECONDS", 300),
-            ollama_url=_env("OLLAMA_URL", "http://localhost:11434/api/generate"),
-            llm_base_url=_env("LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/"),
+            ollama_url=_ipv4_localhost(_env("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")),
+            llm_base_url=_ipv4_localhost(_env("LLM_BASE_URL", "http://127.0.0.1:11434/v1")).rstrip("/"),
             llm_model=_env("LLM_MODEL", "qwen2.5:7b", "OLLAMA_MODEL"),
             llm_api_key=_env("LLM_API_KEY", "ollama"),
             llm_timeout=_env_int("LLM_TIMEOUT", 45),

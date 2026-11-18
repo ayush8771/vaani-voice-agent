@@ -25,6 +25,8 @@ import hashlib
 import json
 import logging
 import chromadb
+
+from config import settings
 from chromadb.utils import embedding_functions
 
 logger = logging.getLogger(__name__)
@@ -34,7 +36,8 @@ KNOWLEDGE_DIR    = "knowledge"
 CHROMA_DIR       = "chroma_db"
 COLLECTION       = "restaurant_knowledge"
 EMBED_MODEL      = "nomic-embed-text"
-OLLAMA_EMBED     = "http://localhost:11434/api/embeddings"
+# 127.0.0.1, not localhost: on Windows 'localhost' adds ~2 s per request (IPv6 tried first)
+OLLAMA_EMBED     = settings.ollama_url.rsplit("/api/", 1)[0] + "/api/embeddings"
 
 DEFAULT_MAX_DISTANCE = float(os.getenv("RAG_MAX_DISTANCE", "0.55"))
 MIN_LEXICAL_OVERLAP = float(os.getenv("RAG_MIN_LEXICAL_OVERLAP", "0.08"))

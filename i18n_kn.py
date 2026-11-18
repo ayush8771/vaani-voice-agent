@@ -115,6 +115,7 @@ SENTENCES = {
     "Or I can add you to the waitlist for {time}.": "ಅಥವಾ {time} ವೇಟಿಂಗ್ ಲಿಸ್ಟ್‌ಗೆ ನಿಮ್ಮನ್ನು ಸೇರಿಸಬಹುದು.",
     "Say waitlist if you would like that.": "ಬೇಕಿದ್ದರೆ ವೇಟಿಂಗ್ ಲಿಸ್ಟ್ ಎಂದು ಹೇಳಿ.",
     "You are on the waitlist for {date} at {time}.": "ನೀವು {date}, {time} ವೇಟಿಂಗ್ ಲಿಸ್ಟ್‌ನಲ್ಲಿದ್ದೀರಿ.",
+    "I have noted: {notes}.": "ನಾನು ಗಮನಿಸಿಕೊಂಡಿದ್ದೇನೆ: {notes}.",
     "I will message you on WhatsApp if a table frees up.": "ಟೇಬಲ್ ಖಾಲಿಯಾದ ತಕ್ಷಣ WhatsApp ನಲ್ಲಿ ತಿಳಿಸುತ್ತೇನೆ.",
 }
 

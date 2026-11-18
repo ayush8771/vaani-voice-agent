@@ -599,7 +599,12 @@ def _booking_turn(msg: str, state: dict):
 
     state["stage"] = "confirm"
     state["hold_token"] = prepared["hold_token"]
-    return say(prepared["message"])
+    message = prepared["message"]
+    noted = [*state.get("notes", []), *([state["occasion"]] if state.get("occasion") else [])]
+    if noted:
+        # Tell the caller what staff will be told, before they confirm.
+        message = message.replace("Shall I book it?", f"I have noted: {', '.join(noted)}. Shall I book it?")
+    return say(message)
 
 
 def _booking_notes(state: dict) -> str:

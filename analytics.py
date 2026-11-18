@@ -6,7 +6,7 @@ analytics.py — the owner's analytics agent: questions in plain language, answe
      -> validated with sqlglot: one SELECT, known tables only, row limit added
      -> run through the official SQLite MCP server (mcp-server-sqlite, a separate
         process over stdio) against a fresh read-only analytics copy
-     -> short answer + the rows + the exact SQL, shown to the owner
+     -> answer + the rows + the exact SQL, shown to the owner (no LLM summary: nothing invented)
 
 The analytics copy holds bookings, waitlist, customers and agent activity, with
 phone numbers reduced to their last 4 digits and no secrets (admins, codes,
@@ -15,12 +15,13 @@ tokens, audit log). Vaani only ever calls the server's read tools.
 
 import ast
 import asyncio
-import json
 import logging
 import os
 import re
 import sqlite3
 import sys
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -68,12 +69,36 @@ class Answer:
 
 # ── 1. THE ANALYTICS COPY ─────────────────────────────────────────────────────
 def snapshot_path() -> str:
-    return os.path.splitext(settings.db_path)[0] + ".analytics.db"
+    """Outside the project folder (cloud-sync tools like OneDrive lock files they upload)."""
+    folder = os.path.join(tempfile.gettempdir(), "vaani")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"analytics-{os.getpid()}.db")
+
+
+_built_from = None
+
+
+def _data_version() -> tuple:
+    """Changes whenever the main database (or its write-ahead log) changes."""
+    stamp = [settings.db_path]
+    for suffix in ("", "-wal"):
+        try:
+            st = os.stat(settings.db_path + suffix)
+            stamp += [st.st_mtime_ns, st.st_size]
+        except OSError:
+            stamp += [0, 0]
+    return tuple(stamp)
 
 
 def build_snapshot(path: Optional[str] = None) -> str:
-    """A fresh copy with only what analytics needs; phones masked, no secrets."""
+    """A copy with only what analytics needs; phones masked, no secrets.
+    Rebuilt only when the main database has changed."""
+    global _built_from
+    explicit = path is not None
     path = path or snapshot_path()
+    version = _data_version()
+    if not explicit and _built_from == version and os.path.exists(path):
+        return path
     if os.path.exists(path):
         os.remove(path)
     src = sqlite3.connect(settings.db_path)
@@ -105,6 +130,8 @@ def build_snapshot(path: Optional[str] = None) -> str:
     finally:
         src.close()
         dst.close()
+    if not explicit:
+        _built_from = version
     return path
 
 
@@ -169,57 +196,138 @@ def validate_sql(sql: str) -> str:
     return query.sql(dialect="sqlite")
 
 
-# ── 3. RUN THROUGH THE SQLITE MCP SERVER ──────────────────────────────────────
-async def _run_via_mcp(db_path: str, sql: str) -> list:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+# ── 3. RUN THROUGH THE SQLITE MCP SERVER (one long-lived process) ─────────────
+class SqliteMcp:
+    """One mcp-server-sqlite process and client session, kept open for the app's lifetime.
+    Starting the server costs several seconds; reusing it costs milliseconds. The
+    server opens the analytics copy afresh for every query, so rebuilding the copy
+    in place is safe."""
 
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=["-c", "from mcp_server_sqlite import main; main()", "--db-path", db_path],
-    )
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tool = "read_query"
-            assert tool in READ_TOOLS              # Vaani never calls the server's write tools
-            result = await session.call_tool(tool, {"query": sql})
-    text = "".join(getattr(block, "text", "") for block in result.content or [])
-    if text.startswith(("Database error", "Error")):
-        raise RuntimeError(text)
-    rows = ast.literal_eval(text) if text else []     # the server returns a Python list of dicts
-    return rows if isinstance(rows, list) else []
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._stop: Optional[asyncio.Event] = None
+        self._session = None
+        self._error: Optional[BaseException] = None
+        threading.Thread(target=self._run, name="vaani-sqlite-mcp", daemon=True).start()
+        if not self._ready.wait(timeout=60):
+            raise RuntimeError("SQLite MCP server did not start")
+        if self._error:
+            raise RuntimeError(f"SQLite MCP server failed: {self._error}")
+
+    def _run(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._main())
+
+    async def _main(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", "from mcp_server_sqlite import main; main()", "--db-path", self.db_path],
+        )
+        try:
+            self._stop = asyncio.Event()
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    self._ready.set()
+                    await self._stop.wait()
+        except BaseException as exc:
+            self._error = exc
+            self._ready.set()
+
+    def alive(self) -> bool:
+        return self._session is not None and self._error is None and self._loop.is_running()
+
+    def query(self, sql: str) -> list:
+        tool = "read_query"
+        assert tool in READ_TOOLS                  # Vaani never calls the server's write tools
+        result = asyncio.run_coroutine_threadsafe(
+            self._session.call_tool(tool, {"query": sql}), self._loop).result(60)
+        text = "".join(getattr(block, "text", "") for block in result.content or [])
+        if text.startswith(("Database error", "Error")):
+            raise RuntimeError(text)
+        rows = ast.literal_eval(text) if text else []   # the server returns a Python list of dicts
+        return rows if isinstance(rows, list) else []
+
+    def close(self):
+        if self._stop is not None:
+            self._loop.call_soon_threadsafe(self._stop.set)
+
+
+_server: Optional[SqliteMcp] = None
+_server_lock = threading.Lock()
 
 
 def run_query(sql: str) -> list:
+    global _server
     db = build_snapshot()
-    return asyncio.run(asyncio.wait_for(_run_via_mcp(db, sql), timeout=60))
+    with _server_lock:
+        if _server is None or not _server.alive() or _server.db_path != db:
+            if _server is not None:
+                _server.close()
+            _server = SqliteMcp(db)
+        server = _server
+    return server.query(sql)
 
 
 # ── 4. ANSWER ─────────────────────────────────────────────────────────────────
-def _summarise(question: str, rows: list) -> str:
+# The example questions on the page have hand-written SQL: no LLM needed.
+KNOWN_SQL = {
+    "which time slots were busiest this week":
+        "SELECT time, COUNT(*) AS bookings FROM bookings WHERE status='confirmed' "
+        "AND date BETWEEN date('now','localtime','-6 days') AND date('now','localtime') "
+        "GROUP BY time ORDER BY bookings DESC LIMIT 5",
+    "how many confirmed bookings do we have tomorrow":
+        "SELECT COUNT(*) AS confirmed_bookings_tomorrow FROM bookings WHERE status='confirmed' "
+        "AND date=date('now','localtime','+1 day')",
+    "what share of bookings were cancelled":
+        "SELECT ROUND(100.0*SUM(status='cancelled')/COUNT(*),1) AS cancelled_percent FROM bookings",
+    "which weekday gets the most guests":
+        "SELECT weekday, SUM(people) AS guests FROM bookings WHERE status='confirmed' "
+        "GROUP BY weekday ORDER BY guests DESC LIMIT 7",
+    "how many returning customers do we have":
+        "SELECT COUNT(*) AS returning_customers FROM customers WHERE visits > 1",
+    "how many people are on the waitlist":
+        "SELECT COUNT(*) AS parties_waiting, COALESCE(SUM(people),0) AS guests_waiting "
+        "FROM waitlist WHERE status='waiting'",
+}
+_learned_sql: dict = {}            # questions answered before (by the LLM), while the app runs
+
+
+def _key(question: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", question.lower()).strip()
+
+
+def _summarise(rows: list) -> str:
+    """Describe the result from the rows themselves: instant, and nothing invented."""
     if not rows:
         return "No matching data."
-    if len(rows) == 1 and len(rows[0]) == 1:
-        (key, value), = rows[0].items()
-        return f"{key.replace('_', ' ')}: {value}"
-    text = llm_client.complete(
-        f"Question: {question}\nResult rows (JSON): {json.dumps(rows[:30], default=str)}",
-        system=("Answer the restaurant owner's question in one or two plain sentences using ONLY the result "
-                "rows. Do not invent numbers."),
-        max_tokens=120,
-    )
-    return text or f"{len(rows)} rows found."
+
+    def fmt(v):
+        return round(v, 1) if isinstance(v, float) else v
+
+    def describe(row):
+        return ", ".join(f"{k.replace('_', ' ')} {fmt(v)}" for k, v in row.items())
+    if len(rows) == 1:
+        return describe(rows[0])
+    return f"Top result: {describe(rows[0])} ({len(rows)} rows below)."
 
 
 def answer(question: str) -> Answer:
     started = time.time()
     result = Answer(question=question.strip()[:300])
-    sql = generate_sql(result.question)
-    if sql and invented_date_filter(result.question, sql):
-        # Small models like to add "today only" filters nobody asked for: ask once more.
-        sql = generate_sql(result.question, feedback="The question names no time period: do not filter "
-                                                     "by date; use all rows.") or sql
+    key = _key(result.question)
+    sql = KNOWN_SQL.get(key) or _learned_sql.get(key)
+    if not sql:
+        sql = generate_sql(result.question)
+        if sql and invented_date_filter(result.question, sql):
+            # Small models like to add "today only" filters nobody asked for: ask once more.
+            sql = generate_sql(result.question, feedback="The question names no time period: do not filter "
+                                                         "by date; use all rows.") or sql
     if not sql:
         result.error = "The language model is not available right now."
         return result
@@ -234,6 +342,8 @@ def answer(question: str) -> Answer:
         logger.error("Analytics query failed: %s", exc)
         result.error = f"The query could not run: {str(exc)[:200]}"
         return result
-    result.summary = _summarise(result.question, result.rows)
+    if key not in KNOWN_SQL:
+        _learned_sql[key] = result.sql
+    result.summary = _summarise(result.rows)
     result.seconds = time.time() - started
     return result

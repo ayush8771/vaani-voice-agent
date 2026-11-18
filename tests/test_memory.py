@@ -116,3 +116,18 @@ def test_name_given_when_phone_was_asked_is_kept():
     assert state["slots"]["name"] == "Ravi" and state["asked"] == "phone"
     reply, state = say("9876543210", state)
     assert reply.startswith("Just to confirm")
+
+
+def test_read_back_says_what_was_noted():
+    """Live test: the birthday and nut allergy were saved, but Vaani never said so."""
+    reply, state = say("Book a table for 2 tomorrow at 8 pm for my wife's birthday, she has a nut allergy", {})
+    reply, state = say("9876543210", state)
+    reply, state = say("Ravi", state)
+    assert "I have noted: nut allergy, birthday. Shall I book it?" in reply
+
+
+def test_noted_details_in_hindi_and_kannada():
+    import i18n
+    en = "I have noted: nut allergy, birthday."
+    assert i18n.localise(en, "hi") == "मैंने नोट कर लिया है: नट्स से एलर्जी, जन्मदिन।"
+    assert i18n.localise(en, "kn") == "ನಾನು ಗಮನಿಸಿಕೊಂಡಿದ್ದೇನೆ: ನಟ್ಸ್ ಅಲರ್ಜಿ, ಹುಟ್ಟುಹಬ್ಬ."
